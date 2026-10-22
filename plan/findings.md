@@ -14997,8 +14997,9 @@ edge absolute floors. Remaining native cone/sphere/extrusion transport and the
 six DropCurve dependencies remain explicit; active DropCurve work belongs to
 PR #463. No competing implementation is included.
 
-The per-case outputs, separate earlier six-case dependency audit and validation
-are documented in [the edge report](issue-294-edge-revolution-report.md).
+Measured results and validation are documented in
+[PR #492](https://github.com/tangency-labs/solidcore/pull/492); detailed case evidence
+is retained locally.
 ## `SmFace::HasSeamProblem` callers wired (topology.face_p4; wire/seam-problem, 2026-10-22)
 
 `SmFaceProps::SetProps_Stage2` (`heal::face_props`) and the seam checks of
