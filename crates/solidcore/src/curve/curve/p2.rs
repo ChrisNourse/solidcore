@@ -3179,6 +3179,7 @@ impl<'t, O: SolutionObject + 't> CcGlobalSolver<'t, O> {
     ) -> Self {
         self.curves = Some([curve1, curve2]);
         self.kernel = Some(k);
+        self.base.fixes = k.fixes;
         self
     }
 
@@ -3968,6 +3969,7 @@ impl<'t, O: SolutionObject + 't> CciGlobalSolver<'t, O> {
     ) -> Self {
         self.curves = Some([curve1, curve2]);
         self.kernel = Some(k);
+        self.base.fixes = k.fixes;
         self
     }
 }

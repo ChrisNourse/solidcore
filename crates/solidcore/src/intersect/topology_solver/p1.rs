@@ -840,6 +840,7 @@ impl<'t, 'a, O: SolutionObject + 't> TopologySolver<'t, 'a, O> {
     /// longer exists).
     pub(super) fn restore_base(&mut self, s: GlobalSolver<'_, O>, tree2: &'t Tree<O>) {
         let GlobalSolver {
+            fixes,
             operation,
             category,
             projected_operation,
@@ -857,6 +858,7 @@ impl<'t, 'a, O: SolutionObject + 't> TopologySolver<'t, 'a, O> {
             branches_visited,
         } = s;
         self.base = GlobalSolver {
+            fixes,
             operation,
             category,
             projected_operation,
