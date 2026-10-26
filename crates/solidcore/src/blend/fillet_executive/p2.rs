@@ -1462,12 +1462,18 @@ impl<O: ClassObject + SolutionObject + Ord> TemporaryRadiusChange<O> {
     ///
     /// # Errors
     ///
-    /// Those of [`TemporaryRadiusChange::set_up`].
+    /// Unported dependencies or preparation requests from the setup.
     pub fn new<A>(access: &mut A, fs: O, rail_index: usize, side_eu: O) -> Result<Self>
     where
         A: ExecutiveAccess<O> + ?Sized,
     {
-        Self::new_with_fixes(access, fs, rail_index, side_eu, &crate::kernel::UpstreamFixes::default())
+        Self::new_with_fixes(
+            access,
+            fs,
+            rail_index,
+            side_eu,
+            &crate::kernel::UpstreamFixes::default(),
+        )
     }
 
     /// Constructs a radius change with the caller's opt-in upstream policy.
@@ -1702,7 +1708,12 @@ where
     A: ExecutiveAccess<O> + ?Sized,
 {
     with_temporary_radius_change_with_fixes(
-        access, fs, rail_index, side_eu, &crate::kernel::UpstreamFixes::default(), body,
+        access,
+        fs,
+        rail_index,
+        side_eu,
+        &crate::kernel::UpstreamFixes::default(),
+        body,
     )
 }
 

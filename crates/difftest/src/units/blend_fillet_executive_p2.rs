@@ -2118,7 +2118,9 @@ mod tests {
             pseudo: FilletBrep::new(),
             generators: vec![],
             solvers: vec![],
+            corners: vec![],
             laws: vec![FilletLaw::linear(1.0, 2.0, None)],
+            edge_caches: BTreeMap::new(),
         };
         let solver = Handle::Solver(0);
         let side = Handle::Edgeuse(EdgeuseId::from_index(0));
@@ -2134,14 +2136,22 @@ mod tests {
         assert!(default_body_called);
         let mut fixes = solidcore::kernel::UpstreamFixes::default();
         fixes.temporary_radius_setup_errors = true;
-        let error = TemporaryRadiusChange::new_with_fixes(&mut access, solver, 0, side, &fixes).unwrap_err();
+        let error =
+            TemporaryRadiusChange::new_with_fixes(&mut access, solver, 0, side, &fixes).unwrap_err();
         assert_eq!(error, expected);
 
         let mut body_called = false;
-        let error = with_temporary_radius_change_with_fixes(&mut access, solver, 0, side, &fixes, |_| {
-            body_called = true;
-            Ok(())
-        })
+        let error = with_temporary_radius_change_with_fixes(
+            &mut access,
+            solver,
+            0,
+            side,
+            &fixes,
+            |_| {
+                body_called = true;
+                Ok(())
+            },
+        )
         .unwrap_err();
         assert_eq!(error, expected);
         assert!(!body_called);
