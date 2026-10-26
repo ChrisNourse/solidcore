@@ -1670,14 +1670,16 @@ mod tests {
             assert_eq!(fixed_plane.natural_uv_domain(), domain);
             assert_eq!(fixed_plane.step_uv_domain(), domain);
             assert_eq!(fixed_plane.uv_scale(), default_plane.uv_scale());
+            assert!(
+                fixed_plane
+                    .evaluate_point(lower_uv)
+                    .distance(expected_lower)
+                    < 1.0e-10
+            );
             assert!(fixed_plane
-                .evaluate_point(lower_uv)
-                .distance(expected_lower)
-                < 1.0e-10);
-            assert!(fixed_plane.position().x_axis().is_perpendicular_to(
-                fixed_plane.position().y_axis(),
-                1.0e-10
-            ));
+                .position()
+                .x_axis()
+                .is_perpendicular_to(fixed_plane.position().y_axis(), 1.0e-10));
             assert!((fixed_plane.position().x_axis().length() - 1.0).abs() < 1.0e-12);
             assert!((fixed_plane.position().y_axis().length() - 1.0).abs() < 1.0e-12);
 
