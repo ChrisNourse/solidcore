@@ -208,3 +208,26 @@
 | `rev2_update_sphere_1` | fixture:fixtures/surface.surf_of_revolution_p3/review_adversarial_zero_width.json#117 (upstream review adversarial (zero-width domains)) | `values.out.len` | `351` | `0` |
 | `rev2_update_sphere_2` | fixture:fixtures/surface.surf_of_revolution_p3/review_adversarial_zero_width.json#123 (upstream review adversarial (zero-width domains)) | `values.out.len` | `351` | `0` |
 | `rev2_update_sphere_5` | fixture:fixtures/surface.surf_of_revolution_p3/review_adversarial_zero_width.json#141 (upstream review adversarial (zero-width domains)) | `values.out.len` | `351` | `0` |
+
+## Review revalidation (2026-10-27)
+
+Rebased onto main `7e6ef6679`. The conflict in the revolution tests preserves both
+main's polar-curve identity regression and this change's rejected-generator-edit
+regression. All 2,363 kernel tests, formatting, plain/native workspace Clippy with
+warnings denied, wasm32, infrastructure tests and native registry tests pass.
+The findings, upstream confirmation and all 111 known differences remain in
+per-entry/per-unit files; the frozen archives are not reintroduced.
+
+The prescribed `--profile difftest` run of all eight affected units has five
+passing units and three partial units, retaining the existing 50 ellipse,
+47 revolution p3 and 14 extrusion reference differences, with zero unexpected
+failures or deferrals. No input, comparison tolerance, FFI guard or known entry
+was changed for this revalidation.
+
+A separate unoptimized Rust run reported two near-zero angle fields in
+`surface.surf_of_revolution_p3/gen0598` (seed `4440996037211322594`): C++
+`3.4905207278410467e-15`, Rust `1.893000648790168e-15`, in `out[30]` and
+`out[34]`. The same case compares all 249 values and passes in the prescribed
+optimized profile. The debug result is retained as a profile-dependent diagnostic,
+not hidden by a new known entry or a relaxed tolerance. No numerical source change
+was made to obtain the optimized result.
