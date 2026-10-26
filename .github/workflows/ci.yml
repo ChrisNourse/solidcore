@@ -104,13 +104,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> bin"
-      # tests/primitives_solid.rs takes minutes unoptimised, so its four tests are
+      # tests/primitives_solid.rs takes minutes unoptimised, so its five tests are
       # skipped here and run once, optimised, in the next step (the difftest-profile
       # solidcore it builds is the one the runner tests below reuse).
       - if: needs.changes.outputs.full == 'true'
         run: >-
           cargo test --workspace -- --exact
           --skip complete_spheres_and_tori_have_analytic_properties
+          --skip partial_spheres_and_tori_have_analytic_properties
           --skip primitives_are_closed_solids_with_analytic_properties
           --skip precise_sphere_properties_scale_and_translate
           --skip pole_free_sphere_tolerance_is_explicit_and_validated
