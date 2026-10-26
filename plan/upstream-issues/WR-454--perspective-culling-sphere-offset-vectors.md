@@ -1,4 +1,4 @@
-#### WR-260. Perspective culling uses the wrong sphere and treats points as vectors
+#### WR-454. Perspective culling uses the wrong sphere and treats points as vectors
 - **Severity:** Wrong result
 - **Area:** Spatial structures and small geometry
 - **Location:** `source/SMLib/src/SmGlobalSolver.cpp:541–565`;
@@ -12,4 +12,6 @@
 - **How found:** adversarial/edge fixture and generated native difftest cases.
 - **Confirmed:** yes (`geom.global_solver/perspective_unequal_containing_swap_0`,
   `gen0207`; caller `curve.curve_p9/gen0415`; details in [findings #525](../findings/general--525-flat-corners-perspective-bounds.md), PR #684).
-- **Rust port:** use each sphere's own radius and center and project offset vectors.
+- **Rust port:** opt in with `Kernel::fixes.perspective_sphere_offsets` to use each sphere's own radius and center and project offset vectors. The default remains pinned C++ behavior.
+
+The review requested WR-445, but main now uses that ID for the fillet-corner setback defect. WR-454 is free across main and the open PR inventory checked on 2026-10-26.

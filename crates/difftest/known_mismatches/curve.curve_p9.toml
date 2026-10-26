@@ -1,6 +1,0 @@
-# PR #684: known C++ correctness differences; see plan/findings/general--525-flat-corners-perspective-bounds.md.
-
-[[mismatch]]
-unit = "curve.curve_p9"
-case = "gen0415"
-why = "C++ perspective global curve solve culls a real projected intersection; Rust finds one within both intervals and projected residual <= 0.01 (plan/findings/general--525-flat-corners-perspective-bounds.md)"
