@@ -12,7 +12,7 @@
 //! | [`FilletSolver::split_and_trim_fillet_surface`]      | `SmFilletSolver::SplitAndTrimFilletSurface`    |
 //! | [`FilletSolver::step_solve`], [`StepSolveOutcome`]   | `SmFilletSolver::StepSolve`                    |
 //! | [`refine_rail_curve_classification`]                 | `sm_RefineRailCurveClassification`             |
-//! | [`calc_rail_x_edge`]                                 | `sm_CalcRailXEdge` (static)                    |
+//! | [`calc_rail_x_edge`], [`calc_rail_x_edge_with_ops`] | `sm_CalcRailXEdge` (static)                    |
 //! | [`FilletSolver::process_full_roll_over`]             | `SmFilletSolver::ProcessFullRollOver`          |
 //! | `impl EvalFunction for FindClippedRadiusEfo`         | `SmFindClippedRadiusEFO` as `SmEvalFunctionObject` |
 //! | `impl EvalNFunctions for FilletSphereSolveEnfo`      | `SmFilletSphereSolveENFO` as `SmEvalNFunctionsObject` |
@@ -98,11 +98,6 @@ const OP: &str = "blend::fillet_solver::p3";
 
 fn invalid(reason: &'static str) -> SolidError {
     SolidError::invalid_input(OP, reason)
-}
-
-/// A call into a unit that is not ported yet (see `blend.fillet_solver_p1`).
-fn unported_on<A, T>(_args: A, upstream: &'static str, unit: &'static str) -> Result<T> {
-    Err(SolidError::unported(upstream, unit))
 }
 
 const fn srf(i: usize) -> SrfIndex {
@@ -299,9 +294,10 @@ impl FilletSolver {
     /// the evaluations and the solvers; `SM_ERR` for a failed
     /// variable-radius drop, a failed constant-radius-assisted plane solve, or more
     /// extra unknowns than `SM_MAX_USER_DOUBLES`; [`SolidError::InvalidInput`] for a
-    /// missing offset surface or a Jacobian size below 4 (upstream indexes past
-    /// `sIntervals`); [`SolidError::Unported`] for the variable-radius branch
-    /// (`SmVariableRadiusFS`) and a constant-distance solver's distance; those of the
+    /// missing offset surface, a variable-radius type without its solver or a Jacobian
+    /// size below 4 (upstream indexes past `sIntervals`); `SM_ERR_NULL_POINTER` for a
+    /// variable-radius solver without original curve; [`SolidError::Unported`] for a
+    /// constant-distance solver's distance; those of the
     /// constant-radius-assisted plane solve (the solver's `PointOnPlaneSolve`).
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn step_solve(
@@ -446,12 +442,38 @@ impl FilletSolver {
                         .surface(si)?
                         .ok_or_else(|| invalid("no offset surface"))?;
                     let srf_pt = surface.surface.surface.evaluate_point(k, get2(&uv, si))?;
-                    // UNPORTED(blend.fillet_standard_solver_p1): SmVariableRadiusFS::GetOriginalCurve (justified: findings.md "blend.fillet_solver_p3 (`SmFilletSolver.cpp` part 3")
-                    return unported_on(
-                        (srf_pt, &*next),
-                        "SmVariableRadiusFS::GetOriginalCurve",
-                        "blend.fillet_standard_solver_p1",
-                    );
+                    let approx_tol = ops.solver().approx_tol_3d;
+                    // `(SmVariableRadiusFS*) this`: only that class reports the type.
+                    let var_rad = ops
+                        .variable_radius_mut()
+                        .ok_or_else(|| invalid("variable-radius type without its solver"))?;
+                    let curve = var_rad
+                        .curve_based
+                        .original_curve()
+                        .ok_or_else(|| SolidError::null_pointer(OP))?;
+                    let mut ivl = var_rad.fillet_law_interval();
+                    // This will usually be outside of this domain, so:
+                    ivl.expand_relative(2.0);
+                    let solutions = curve.global_point_solve::<NoObject>(
+                        k,
+                        &ivl,
+                        SolverOperation::Minimize,
+                        srf_pt,
+                        approx_tol,
+                        SolutionRequested::Single,
+                        &GlobalPointSolveOptions::default(),
+                    )?;
+                    if solutions.len() != 1 {
+                        return Err(SolidError::sm_err(OP));
+                    }
+                    // Parameter gets stored in here:
+                    next.user_doubles[0] = solutions
+                        .get(0)
+                        .ok_or_else(|| SolidError::sm_err(OP))?
+                        .start
+                        .param(0)?;
+                    // Status ignored upstream; reported as for the call above (UB-252).
+                    ops.setup_offset_values(next, Some(&mut radius))?;
                 }
 
                 // Create iso-curve (the iso parameter is not clamped to the natural
@@ -1045,6 +1067,33 @@ pub fn refine_rail_curve_classification_scoped(
     rail: EdgeId,
     classification: &mut CurveClassification<FilletClassObject>,
 ) -> Result<()> {
+    refine_rail_curve_classification_scoped_with_ops(
+        solver,
+        k,
+        target,
+        fillets,
+        rail_index,
+        small_intervals,
+        rail,
+        classification,
+    )
+}
+
+/// Refine a scoped classification with the actual solver's virtual operations.
+///
+/// # Errors
+/// As [`refine_rail_curve_classification_scoped`].
+#[allow(clippy::too_many_arguments)]
+pub fn refine_rail_curve_classification_scoped_with_ops(
+    solver: &mut dyn FilletSolverOps,
+    k: &Kernel,
+    target: &mut Brep,
+    fillets: &FilletBrep,
+    rail_index: usize,
+    small_intervals: &[usize],
+    rail: EdgeId,
+    classification: &mut CurveClassification<FilletClassObject>,
+) -> Result<()> {
     const OP_R: &str = "blend::fillet_solver::p3::refine_rail_curve_classification";
     // Locals
     let rail_face = fillets.fillet_edge(rail)?.orig_face;
@@ -1174,7 +1223,7 @@ pub fn refine_rail_curve_classification_scoped(
 /// [`SolidError::InvalidInput`] here. `Unported` propagates.
 #[allow(clippy::too_many_arguments)]
 fn rail_edgeuse_param(
-    solver: &mut FilletSolver,
+    solver: &mut dyn FilletSolverOps,
     k: &Kernel,
     target: &mut Brep,
     rail_index: usize,
@@ -1212,6 +1261,37 @@ fn rail_edgeuse_param(
 #[allow(clippy::too_many_arguments)]
 pub fn calc_rail_x_edge(
     solver: &mut FilletSolver,
+    k: &Kernel,
+    target: &mut Brep,
+    fillets: &mut FilletBrep,
+    vertex: VertexId,
+    fillet_geom: FilletGeomId,
+    rail_index: usize,
+    rail: EdgeId,
+    side_edge: EdgeId,
+    guess: Option<Point3>,
+) -> Result<()> {
+    calc_rail_x_edge_with_ops(
+        solver,
+        k,
+        target,
+        fillets,
+        vertex,
+        fillet_geom,
+        rail_index,
+        rail,
+        side_edge,
+        guess,
+    )
+}
+
+/// [`calc_rail_x_edge`] with the actual solver's virtual operations retained.
+///
+/// # Errors
+/// As [`calc_rail_x_edge`], including failures from the actual solver's virtuals.
+#[allow(clippy::too_many_arguments)]
+pub fn calc_rail_x_edge_with_ops(
+    solver: &mut dyn FilletSolverOps,
     k: &Kernel,
     target: &mut Brep,
     fillets: &mut FilletBrep,
@@ -1863,18 +1943,11 @@ mod tests {
     }
 
     #[test]
-    fn step_solve_defers_where_upstream_casts_and_runs_the_plane_solve() {
+    fn step_solve_casts_to_the_variable_radius_solver_and_runs_the_plane_solve() {
+        // a solver reporting SM_FS_VARIABLE_RADIUS without being one: upstream's
+        // `(SmVariableRadiusFS*) this` cast is undefined, an input error here
         let (r, _, _) = step(FilletSolverType::VariableRadius, 1.8, 0.5);
-        assert!(
-            matches!(
-                r,
-                Err(SolidError::Unported {
-                    unit: "blend.fillet_standard_solver_p1",
-                    ..
-                })
-            ),
-            "{r:?}"
-        );
+        assert!(matches!(r, Err(SolidError::InvalidInput { .. })), "{r:?}");
         // the assisted kind's step ends in the (base) PointOnPlaneSolve, which the test
         // solver's equations satisfy on the clipped step
         let (r, _, _) = step(FilletSolverType::ConstRadiusAssisted, 1.8, 0.5);

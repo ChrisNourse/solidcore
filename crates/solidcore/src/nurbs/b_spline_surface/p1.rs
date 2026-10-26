@@ -40,6 +40,7 @@
 //! | [`BSplineSurface::transform`]                     | `Transform`                                      |
 //! | [`BSplineSurface::is_kind_of`]                    | `IsKindOf`                                       |
 //! | [`BSplineSurface::read_from_db`]                  | `ReadFromDB`                                     |
+//! | [`BSplineSurface::write_to_db`]                   | `WriteToDB`                                      |
 //! | [`BSplineSurface::TYPE`], [`BSplineSurface::type_code`], [`BSplineSurface::type_string`], [`BSplineSurface::class_string`] | `GetType`, `GetTypeString`, `GetClassString` (`SM_COMMON`) |
 //! | [`BSplineSurface::out_of_bounds_enabled_mut`]     | `GetOutOfBoundsEnabled`                          |
 //! | [`BSplineSurface::is_out_of_bounds_enabled`]      | `IsOutOfBoundsEnabled`                           |
@@ -128,7 +129,7 @@
 //!   `IsDegenerateCurve` runs the `SmSurface` base body on a copy of the B-spline
 //!   wrapped as a `Surface` (without owner).
 
-use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Result, SolidError};
 use crate::geom::axis2_placement::Axis2Placement;
@@ -155,7 +156,7 @@ use crate::nurbs::nurbs_srf::{allocate_nurb_surface, copy_nurb_surface};
 use crate::nurbs::srf_basic::{Direction, Surface};
 use crate::nurbs::srf_common::{corner_pts, cyl_cone, extrude_crv, CylCone};
 use crate::surface::surface::p1::SurfaceSolveContext;
-use crate::topology::database_io::{DatabaseReader, FileType};
+use crate::topology::database_io::{DatabaseReader, DatabaseWriter, FileType};
 
 /// `SURF_BASE_TYPE` (`SmTypes.h`).
 const SURF_BASE_TYPE: i64 = 15000;
@@ -182,6 +183,7 @@ const OP_KNOTS: &str = "nurbs::b_spline_surface::p1::BSplineSurface::knots";
 const OP_STEP_INV: &str = "nurbs::b_spline_surface::p1::BSplineSurface::step_inversion";
 const OP_XFORM: &str = "nurbs::b_spline_surface::p1::BSplineSurface::transform";
 const OP_READ: &str = "nurbs::b_spline_surface::p1::BSplineSurface::read_from_db";
+const OP_WRITE: &str = "nurbs::b_spline_surface::p1::BSplineSurface::write_to_db";
 
 /// `SmBSplineSurfaceForm`: the STEP form of a B-spline surface; discriminants are the
 /// upstream values.
@@ -414,10 +416,12 @@ pub struct BSplineSurface {
     pub(crate) nurb: Option<Surface>,
     /// `m_bNurbIsBorrowed`.
     pub(crate) nurb_is_borrowed: bool,
-    /// `m_bOutOfBoundsEnabled`: evaluate beyond the natural domain. A `Cell`, so a
-    /// solve can enable it for its scope on a shared surface, as upstream's
-    /// `SmTemporaryChangeValue` does on a `const` one (no copy of the surface).
-    pub(crate) out_of_bounds_enabled: Cell<bool>,
+    /// `m_bOutOfBoundsEnabled`: evaluate beyond the natural domain. Interior-mutable
+    /// (an `AtomicBool`, relaxed: a plain `Cell` would make every arena holding a
+    /// surface non-`Sync`), so a solve can enable it for its scope on a shared surface,
+    /// as upstream's `SmTemporaryChangeValue` does on a `const` one (no copy of the
+    /// surface).
+    pub(crate) out_of_bounds_enabled: AtomicBool,
     /// `m_eKnotType`.
     pub(crate) knot_type: KnotType,
     /// `m_eBSplineSurfaceForm`.
@@ -665,7 +669,7 @@ impl BSplineSurface {
         Self {
             nurb: None,
             nurb_is_borrowed: false,
-            out_of_bounds_enabled: Cell::new(false),
+            out_of_bounds_enabled: AtomicBool::new(false),
             knot_type: KnotType::Unspecified,
             form: BSplineSurfaceForm::Unspecified,
         }
@@ -772,7 +776,9 @@ impl BSplineSurface {
         Self {
             nurb,
             nurb_is_borrowed: false,
-            out_of_bounds_enabled: Cell::new(self.out_of_bounds_enabled.get()),
+            out_of_bounds_enabled: AtomicBool::new(
+                self.out_of_bounds_enabled.load(Ordering::Relaxed),
+            ),
             knot_type: self.knot_type,
             form: self.form,
         }
@@ -787,7 +793,9 @@ impl BSplineSurface {
         Self {
             nurb: self.nurb.as_ref().map(copy_nurb_surface),
             nurb_is_borrowed: false,
-            out_of_bounds_enabled: Cell::new(self.out_of_bounds_enabled.get()),
+            out_of_bounds_enabled: AtomicBool::new(
+                self.out_of_bounds_enabled.load(Ordering::Relaxed),
+            ),
             knot_type: self.knot_type,
             form: self.form,
         }
@@ -864,14 +872,14 @@ impl BSplineSurface {
     /// Whether evaluation beyond the natural domain is enabled (`IsOutOfBoundsEnabled`).
     #[must_use]
     pub fn is_out_of_bounds_enabled(&self) -> bool {
-        self.out_of_bounds_enabled.get()
+        self.out_of_bounds_enabled.load(Ordering::Relaxed)
     }
 
     /// Sets the out-of-bounds evaluation flag through a shared reference: for a
     /// temporary change that the caller restores (`SmTemporaryChangeValue` on
     /// `GetOutOfBoundsEnabled()` of a `const` surface).
     pub(crate) fn set_out_of_bounds_enabled_in_place(&self, enabled: bool) {
-        self.out_of_bounds_enabled.set(enabled);
+        self.out_of_bounds_enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// Whether the NURB is borrowed (`IsNurbBorrowed`).
@@ -2234,10 +2242,71 @@ impl BSplineSurface {
         Ok(Self {
             nurb: Some(sur),
             nurb_is_borrowed: false,
-            out_of_bounds_enabled: Cell::new(false),
+            out_of_bounds_enabled: AtomicBool::new(false),
             knot_type,
             form,
         })
+    }
+
+    /// `WriteToDB`: writes the NURB's last control point indices `n m`, degrees `p q`,
+    /// rational flag and, for `version > 32`, knot type and form; then the control
+    /// net row by row (`wx wy wz`, plus `w` when rational: the stored, weighted
+    /// values) and the u and v knots.
+    ///
+    /// # Errors
+    ///
+    /// `SM_ERR` without NURB (upstream dereferences `NULL`).
+    pub fn write_to_db(&self, db: &mut DatabaseWriter, version: u64) -> Result<()> {
+        let sur = self.nurb_or_err(OP_WRITE)?;
+        let (n, m) = (sur.n() as i64, sur.m() as i64);
+        let (p, q) = (sur.p() as i16, sur.q() as i16);
+        let knot_type = self.knot_type as u64;
+        let form = self.form as u64;
+
+        // rational flag
+        let rat: i16 = i16::from(sur.is_rational());
+
+        if db.file_type() == FileType::Ascii {
+            db.out_i64(n).out_str(" ").out_i64(m).out_str("\n");
+            db.out_i64(p.into()).out_str(" ").out_i64(q.into());
+            db.out_str("\n");
+            db.out_i64(rat.into()).out_str("\n");
+            if version > 32 {
+                db.out_u64(knot_type);
+                db.out_str(" BSplineSurface Knot Type Flag \n");
+                db.out_u64(form).out_str(" BSplineSurfaceForm Flag \n");
+            }
+        } else {
+            db.write_long(n);
+            db.write_long(m);
+            db.write_short(p);
+            db.write_short(q);
+            db.write_short(rat);
+            if version > 32 {
+                db.write_long(knot_type as i64);
+                db.write_long(form as i64);
+            }
+        }
+
+        // control points, by rational / non-rational
+        for row in sur.rows() {
+            for pw in row {
+                if rat == 1 {
+                    db.reals(&[pw.x, pw.y, pw.z, pw.w]);
+                } else {
+                    db.reals(&[pw.x, pw.y, pw.z]);
+                }
+            }
+        }
+
+        // output u knots, then v knots
+        for &u in sur.u_knots() {
+            db.reals(&[u]);
+        }
+        for &v in sur.v_knots() {
+            db.reals(&[v]);
+        }
+        Ok(())
     }
 }
 
