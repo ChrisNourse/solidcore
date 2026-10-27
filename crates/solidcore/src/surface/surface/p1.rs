@@ -2105,7 +2105,7 @@ impl Surface {
         let recurses = match self.kind() {
             SurfaceKind::OffsetSurface(s) => !self
                 .natural_uv_domain()
-                .is_contained_by(&s.base_surface().natural_uv_domain(), EFF_ZERO),
+                .is_contained_by(&s.base_surface().natural_uv_domain_with_nurb(k)?, EFF_ZERO),
             _ => true,
         };
         if want[2] && recurses {
@@ -2266,6 +2266,28 @@ impl Surface {
                 base_create_offset_surface(k, self, signed_offset_distance).map(Some)
             }
         }
+    }
+
+    /// Not upstream (`SmSurface::OffsetCollapses`, WR-464): whether the offset by
+    /// `signed_offset_distance` shrinks a cone, cylinder, sphere or torus onto its spine
+    /// (radius below `tol`), the only case where [`Self::create_offset_surface`] gives no
+    /// surface. `false` for every other surface.
+    ///
+    /// # Errors
+    ///
+    /// Those of the NURB conversion of the kind.
+    pub fn offset_collapses(
+        &self,
+        k: &Kernel,
+        signed_offset_distance: f64,
+        tol: f64,
+    ) -> Result<bool> {
+        Ok(match self.kind_with_nurb(k)? {
+            SurfaceKind::Cone(s) => s.offset_collapses(k, signed_offset_distance, tol),
+            SurfaceKind::Sphere(s) => s.offset_collapses(signed_offset_distance, tol),
+            SurfaceKind::Torus(s) => s.offset_collapses(signed_offset_distance, tol),
+            _ => false,
+        })
     }
 
     /// The silhouette curves of the surface over `uv_domain` for a parallel
