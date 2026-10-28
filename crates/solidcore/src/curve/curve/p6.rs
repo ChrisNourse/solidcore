@@ -144,6 +144,14 @@ impl SolutionObject for CurveHandle {
 #[derive(Debug, Default)]
 pub(crate) struct DropPointCaches(Vec<Option<CurveCache<CurveHandle>>>);
 
+impl DropPointCaches {
+    /// Drops the caches of slots `len..`, for a caller whose curves from `len` on were
+    /// removed (a slot must not outlive its curve).
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+}
+
 // ---- CalculateBoundingBox --------------------------------------------------------------
 
 /// The base-class `SmCurve::CalculateBoundingBox` of `curve` over `interval`: the
