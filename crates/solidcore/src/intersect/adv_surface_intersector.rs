@@ -567,7 +567,6 @@ impl<'s, 't, O: SolutionObject + 't> AdvSurfaceIntersector<'s, 't, O> {
                 }
                 if angle_rad * (180.0 / PI) < 5.0 {
                     self.push_tangent_seed(k, &mut tangent_seeds, node1, node2)?;
-                    continue;
                     if !probation {
                         continue;
                     }
