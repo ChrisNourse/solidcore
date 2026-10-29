@@ -14,6 +14,7 @@
 //! | `order_edgeuses_by_brep` (private) | `sm_OrderEdgeusesByBrep` |
 //! | [`api_shell_brep_full`], [`ShellCopyIdentities`] | `SmApiShellBrepFull` (and its working copy's identities) |
 //! | [`api_offset_brep_full`] | `SmApiOffsetBrepFull` |
+//! | [`faceuse_offset`] | `SmOffsetGeometryCreation::FaceuseOffset` over the owned B-rep |
 //!
 //! Deviations: original B-reps and the kernel are explicit arguments, not retained
 //! pointers. Options replace scalar flag lists; owned results replace output pointers.
@@ -45,7 +46,7 @@
 //! not parity with the native ownership flag.
 //! There is no new recursion; all owned loops are bounded by existing arena/relation lengths.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::p1::{OffsetExecutive, OffsetOperation};
 use crate::boolean::merge::p4::{
@@ -54,7 +55,7 @@ use crate::boolean::merge::p4::{
 };
 use crate::error::{EntityRef, Result, SolidError};
 use crate::geom::a_object::BooleanOperation;
-use crate::geom::attribute::{AttributeStore, ObjectKey};
+use crate::geom::attribute::AttributeStore;
 use crate::geom::context::{with_mark_lock, MarkType, ALL_MARKS};
 use crate::geom::extent2d::Extent2d;
 use crate::geom::object::{FaceKey, NotifyOperation, ObjectRef};
@@ -72,10 +73,13 @@ use crate::topology::brep::p4::{shrink_geometry, stitch_faces};
 use crate::topology::brep::p7::{make_face_with_curves_with_kernel_context, FaceCurvesInput};
 use crate::topology::proto_topology::p1::CopyBrepMap;
 
+#[cfg(test)]
+use crate::geom::attribute::ObjectKey;
 use crate::sweep::topology_sweep::store::SweepIdentities;
 use crate::topology::edge::{NotificationStores, NotifyState};
 use crate::topology::edgeuse::{p1 as eu, p2 as eu2};
 use crate::topology::face::p2 as face;
+#[cfg(test)]
 use crate::topology::topology::Topology;
 use crate::topology::{Brep, BrepId, EdgeId, EdgeuseId, FaceId, FaceuseId, RegionId};
 
@@ -95,7 +99,7 @@ const OP_API_OFFSET: &str = "offset::offset_executive::p2::api_offset_brep_full"
 /// The context always comes from the supplied `Kernel`, never from a substitute.
 pub struct OffsetNotifications<'a> {
     /// Actual topology metadata, shared by source and result notifications.
-    pub records: &'a mut BTreeMap<ObjectKey, Topology>,
+    pub records: &'a mut crate::topology::topology::NotifyRecords,
     /// Actual attributes associated with those object identities.
     pub attributes: &'a mut AttributeStore,
     /// Object identities in the source arena.
@@ -894,8 +898,7 @@ impl OffsetExecutive {
         // records and the reserved B-rep key, it did not exist before this call.
         notifications
             .records
-            .entry((notifications.result_key_of)(EntityRef::Region(region)).key)
-            .or_default();
+            .or_default((notifications.result_key_of)(EntityRef::Region(region)).key);
         temporary.set_tolerance(self.approximation_tol_3d());
         // SmOffsetExecutive.cpp:437 / 1073, after constructing the temporary.
         temporary.set_editing_enabled(true);
@@ -1123,7 +1126,7 @@ impl OffsetExecutive {
             let faces = bp1::faces(&temporary, None)?;
             for id in faces {
                 let key = (notifications.result_key_of)(EntityRef::Face(id));
-                let record = notifications.records.entry(key.key).or_default();
+                let record = notifications.records.or_default(key.key);
                 if record.is_marked(&kernel.context, mark_type) {
                     continue;
                 }
@@ -1369,6 +1372,28 @@ pub fn api_offset_brep_full(
     // (not upstream: the port's cached topology, true again for the caller)
     result.refresh_cached_topology();
     Ok(result)
+}
+
+/// `SmOffsetGeometryCreation(distance, approx_tol_3d).FaceuseOffset(faceuse, TRUE)`: the
+/// face's surface offset by `distance` along the normal of the source face use (against
+/// it for an opposite one), made analytic when possible, its self-intersections skipped.
+/// `None` when no offset surface was made.
+///
+/// # Errors
+///
+/// Those of `FaceuseOffset` (the face use's face, its surface, the offset surface).
+pub fn faceuse_offset(
+    kernel: &Kernel,
+    original: &Brep,
+    faceuse: FaceuseId,
+    distance: f64,
+    approx_tol_3d: f64,
+) -> Result<Option<crate::surface::surface::Surface>> {
+    let creator = crate::offset::offset_geometry_creation::OffsetGeometryCreation::new(
+        distance,
+        approx_tol_3d,
+    );
+    Ok(super::face::build(kernel, &creator, original, faceuse, true)?.0)
 }
 
 fn configured_executive(original: &Brep, options: OffsetOptions) -> OffsetExecutive {
@@ -1838,6 +1863,41 @@ mod tests {
     use crate::surface::surface::Surface;
     use crate::topology::{Faceuse, FaceuseId, Region, Shell};
 
+    /// `faceuse_offset` offsets a box face's plane: a plane parallel to it, `distance` away.
+    #[test]
+    fn faceuse_offset_of_a_box_face_is_a_plane_at_the_distance() {
+        use crate::math::Point2;
+        use crate::surface::surface::p2::SurfaceKind;
+        let mut k = Kernel::default();
+        let brep = crate::primitive::api_primitives::create_box(
+            &mut k,
+            crate::math::Point3::new(0.0, 0.0, 0.0),
+            1.0,
+            2.0,
+            3.0,
+        )
+        .unwrap();
+        let f = bp1::faces(&brep, None).unwrap()[0];
+        let faceuse = face::faceuses(&brep, f).unwrap().0.unwrap();
+        let SurfaceKind::Plane(source) = face::surface(&brep, f).unwrap().unwrap().kind() else {
+            panic!("a box face is a plane");
+        };
+        let on_source = source.evaluate_point(Point2::new(0.0, 0.0));
+        let made = faceuse_offset(&k, &brep, faceuse, 0.25, 1e-6)
+            .unwrap()
+            .unwrap();
+        let SurfaceKind::Plane(made) = made.kind() else {
+            panic!("an offset plane stays a plane");
+        };
+        let [a, b, c] = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+            .map(|(u, v)| made.evaluate_point(Point2::new(u, v)));
+        let normal = (b - a).cross(c - a);
+        let normal = normal * (1.0 / normal.length());
+        for q in [a, b, c] {
+            assert!(((q - on_source).dot(normal).abs() - 0.25).abs() < 1e-12);
+        }
+    }
+
     /// `sm_OrderEdgeusesByBrep`: the B-rep's edge uses come from the end of its
     /// face/face-use/edge-use order, each once; an edge use not in the B-rep goes last.
     #[test]
@@ -2011,13 +2071,13 @@ mod tests {
     }
 
     struct NotificationFixture {
-        records: BTreeMap<ObjectKey, Topology>,
+        records: crate::topology::topology::NotifyRecords,
         attributes: AttributeStore,
     }
 
     impl NotificationFixture {
         fn new(original: &Brep) -> Self {
-            let mut records = BTreeMap::new();
+            let mut records = crate::topology::topology::NotifyRecords::new();
             records.insert(original.key(), Topology::new());
             records.insert(
                 result_key(EntityRef::Brep(BrepId::from_index(0))).key,
@@ -2750,8 +2810,7 @@ mod tests {
                 .set_user_index1(17);
             fixture
                 .records
-                .entry(offset_key.key)
-                .or_default()
+                .or_default(offset_key.key)
                 .set_user_index1(93);
             let records_before = fixture.records.clone();
             let mut kernel = Kernel::default();
@@ -2982,7 +3041,7 @@ mod tests {
             .edit_parameterization(&kernel, &part_interval)
             .unwrap();
         let mut fixture = NotificationFixture::new(&original);
-        let source_records = fixture.records.clone();
+        let source_records = (*fixture.records).clone();
         let entities = result
             .edges()
             .iter()
@@ -4247,7 +4306,7 @@ mod tests {
         use crate::primitive::api_primitives::create_plane;
         let mut sheet = create_plane(k, Vec3::new(0.0, 0.0, 0.0), 10.0, 10.0).unwrap();
         let other = create_plane(k, Vec3::new(10.0, 0.0, 0.0), 10.0, 10.0).unwrap();
-        let mut records = BTreeMap::new();
+        let mut records = crate::topology::topology::NotifyRecords::new();
         let mut attributes = AttributeStore::default();
         let mut env = crate::topology::edge::NotifyEnv {
             records: &mut records,
