@@ -1521,8 +1521,8 @@ impl Curve {
     }
 
     /// `CalculateTightBoundingBox`: the axis aligned box of the curve over `interval`
-    /// from its end points, (for B-splines) its tangent discontinuous knots and last
-    /// knot, and the points where its tangent is perpendicular to x, y and z. The
+    /// from its end points, (for B-splines) its tangent discontinuous knots inside the
+    /// interval, and the points where its tangent is perpendicular to x, y and z. The
     /// line override is [`crate::curve::line::Line::calculate_tight_bounding_box`].
     ///
     /// # Errors
@@ -1548,17 +1548,20 @@ impl Curve {
         eval_keep(k, self, interval.max(), &mut pt)?;
         tight_box.add_point(pt);
 
-        // Now add all tangent discontinuous points
+        // Now add the tangent discontinuous points inside the interval.
         if self.is_kind_of(BSPLINE_CURVE_TYPE) {
             let (knots, _) = self.knots(k, None)?;
             let (_, continuities) = self.calculate_continuities(k, 2.0)?;
 
-            let n = knots.len();
             for (i, &knot) in knots.iter().enumerate().skip(1) {
                 let low = continuities
                     .get(i)
                     .is_some_and(|&c| ord(c) <= ord(ContinuityType::C1));
-                if i == n - 1 || low {
+                // Only the tangent discontinuous knots strictly inside the interval: its
+                // ends are already in the box, and a knot outside it is a point the curve
+                // never reaches over `interval` (an edge on part of a NURBS arc whose box
+                // then included the arc's own end knot, at points the edge never reaches).
+                if low && knot > interval.min() && knot < interval.max() {
                     eval_keep(k, self, knot, &mut pt)?;
                     tight_box.add_point(pt);
                 }
@@ -1940,6 +1943,56 @@ mod tests {
                 bx.w_max()
             ],
             [1.0, -2.0, 0.5, 4.0, 3.0, 0.5]
+        );
+    }
+
+    #[test]
+    fn tight_box_over_a_sub_interval_holds_the_knots_inside() {
+        // Regression for #1054: `CalculateTightBoundingBox` used to add a B-spline's last
+        // (and any tangent-discontinuous) knot whatever the queried interval was, so an
+        // edge on part of a NURBS arc pulled its box out to the arc's far end. Only the
+        // knots strictly inside the interval may be added; the interval's ends are already
+        // in the box.
+        use crate::geom::axis2_placement::Axis2Placement;
+        use crate::nurbs::b_spline_curve::NurbCircleParam;
+
+        let k = Kernel::default();
+        let frame = Axis2Placement::new(
+            Vec3::from_array([0.0, 0.0, 0.0]),
+            Vec3::from_array([1.0, 0.0, 0.0]),
+            Vec3::from_array([0.0, 1.0, 0.0]),
+        );
+        let arc = Curve::from(
+            BSplineCurve::create_circle_segment(
+                3,
+                &frame,
+                50.0,
+                0.0,
+                90.0,
+                NurbCircleParam::Quadratic,
+            )
+            .unwrap(),
+        );
+        let ivl = arc.natural_interval();
+        // Half the arc: from its start to the midpoint of its interval (0 deg to 45 deg).
+        let half = Extent1d::from_min_max(ivl.min(), 0.5 * (ivl.max() - ivl.min()) + ivl.min());
+        let bx = arc
+            .calculate_tight_bounding_box(&k, &half)
+            .expect("tight box over a sub-interval");
+        // The arc's own point at 45 deg is (50 cos45, 50 sin45) = (35.355, 35.355); the
+        // buggy box reached the 90 deg endpoint (0, 50), so its u_min was 0 and v_max 50.
+        let r = 50.0 / sqrt(2.0);
+        assert!(
+            (bx.u_min() - r).abs() < 1e-6,
+            "u_min {} should be {}",
+            bx.u_min(),
+            r
+        );
+        assert!(
+            (bx.v_max() - r).abs() < 1e-6,
+            "v_max {} should be {}",
+            bx.v_max(),
+            r
         );
     }
 
