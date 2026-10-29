@@ -52,9 +52,9 @@
 //!   `SmBoolean` function, which callers read as `TRUE`; the port returns `true`.
 //! - Upstream defects: UB-169 (a zero view vector leaves the transform axes
 //!   uninitialised: `InvalidInput`), UB-170 (the silhouette-edge loop of
-//!   `IntersectCurveWithSilhouettes` is bounded by the vertex count: indexes past the
-//!   edge list return `InvalidInput`; fewer vertices than edges skips edges, as
-//!   upstream). Outputs that a failed callee leaves uninitialised upstream return
+//!   `IntersectCurveWithSilhouettes` is bounded by the vertex count: the port
+//!   stops at the edge list's end instead of reading past it; fewer vertices than
+//!   edges still skips edges, as upstream). Outputs that a failed callee leaves uninitialised upstream return
 //!   `InvalidInput` instead of being read.
 //! - `ComputeGlobalVisibility`'s copy of edge and face attributes onto the edge curves
 //!   (display colours) is not ported: curves carry no attribute list here.
@@ -1795,16 +1795,10 @@ impl Hcr {
             }
         }
 
-        // Now do Edges: the loop runs over the vertex count (UB-170).
+        // UB-170: upstream indexes the edge query by the vertex count. Preserve
+        // that limit when it is in bounds, but stop at the end of the edge query.
         let edge_objects = self.sil_edge_tree.objects_in_box(&e_box)?;
-        let mut sil_edges = Vec::new();
-        for ii in 0..vertices.len() {
-            let e = edge_objects.get(ii).copied().ok_or(undefined(
-                "UB-170: silhouette edge index past the edges in the box",
-            ))?;
-            sil_edges.push(e);
-        }
-        for pe in sil_edges {
+        for pe in edge_objects.into_iter().take(vertices.len()) {
             let Some(pe) = pe else {
                 continue;
             };
@@ -1914,6 +1908,35 @@ mod tests {
         let z = t.transform_vector(v);
         assert!((z.z - 1.0).abs() < 1e-12);
         assert!(view_transform_for_vector(Vec3::new(0.0, 0.0, 0.0)).is_err());
+    }
+
+    #[test]
+    fn silhouette_query_with_two_vertices_and_one_edge_completes() {
+        let mut k = Kernel::default();
+        let scene = crate::primitive::api_primitives::create_box(
+            &mut k,
+            Vec3::new(0.0, 0.0, 0.0),
+            1.0,
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let e = crate::topology::brep::p1::edges(&scene, None).unwrap()[0];
+        let ivl = edge::interval(&scene, e).unwrap();
+        let tol = edge::tolerance(&scene, e).unwrap();
+        let bbox = Extent3d::from_points(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0));
+        let opts = HcrOptions {
+            approx_tol_3d: 1e-3,
+            ang_tol_rad: 0.1,
+            display_seams: true,
+            display_smooth_edges: true,
+        };
+        let mut h = Hcr::from_scene(&k, scene, &Axis2Placement::default(), bbox, opts);
+        h.add_silhouette_edge(&k, e).unwrap();
+        assert_eq!(h.sil_vertex_tree.objects_in_box(&bbox).unwrap().len(), 2);
+        assert_eq!(h.sil_edge_tree.objects_in_box(&bbox).unwrap().len(), 1);
+        let mut cc = new_curve_classification(&k, HcrObject::Curve(e), ivl, tol);
+        h.intersect_curve_with_silhouettes(&k, &mut cc).unwrap();
     }
 
     #[test]
