@@ -2,6 +2,8 @@
 //! Setup, corner creation and direct first-Nx1 topology use actual bodies and
 //! owned production solvers. Full fillet construction remains deferred at the
 //! missing public API; native result records do not claim Rust geometry success.
+//! `fillet_preview` cases run `SmApiFilletPreview` (module `preview`) on their own seed
+//! stream (`preview0000`, ...), so each `gen` case stays the one the baseline has.
 
 use crate::{Case, HarnessError, Output, Rng, UnitDiff};
 use serde::{Deserialize, Serialize};
@@ -24,8 +26,12 @@ use std::collections::BTreeMap;
 
 #[path = "blend_fillet_executive_p3/end_to_end.rs"]
 mod end_to_end;
+#[path = "blend_fillet_executive_p3/preview.rs"]
+mod preview;
 #[path = "blend_fillet_executive_p3/surface_bodies.rs"]
 mod surface_bodies;
+#[path = "blend_fillet_executive_p3/two_offset_chamfer.rs"]
+mod two_offset_chamfer;
 
 /// Parity runner for the three executive orchestration methods.
 pub struct Runner;
@@ -42,6 +48,27 @@ struct Inputs {
     surface_surface: Option<end_to_end::SurfaceSurface>,
     #[serde(default)]
     surface_surface_bodies: Option<surface_bodies::SurfaceSurfaceBodies>,
+    #[serde(default)]
+    fillet_preview: Option<preview::FilletPreview>,
+    /// tangency-labs/solidcore#880's unequal chamfer (module `two_offset_chamfer`).
+    #[serde(default)]
+    two_offset_chamfer: Option<two_offset_chamfer::TwoOffsetChamfer>,
+}
+
+impl Inputs {
+    /// Whether any other fixture form accompanies a `fillet_preview` case.
+    fn mixed_with_preview(&self) -> bool {
+        self.surface_surface_bodies.is_some()
+            || self.surface_surface.is_some()
+            || self.real_solid.is_some()
+            || self.upstream_case.is_some()
+            || !self.record.is_empty()
+    }
+
+    /// Whether any other fixture form accompanies a `two_offset_chamfer` case.
+    fn mixed_with_chamfer(&self) -> bool {
+        self.fillet_preview.is_some() || self.mixed_with_preview()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -786,7 +813,7 @@ fn rust(input: &Inputs) -> Result<Output, HarnessError> {
     else {
         return Err(HarnessError::new("short executive record"));
     };
-    let mut k = seeded_kernel()?;
+    let mut k = Kernel::default();
     k.context.set_doing_boolean(*prior_boolean != 0.0);
     let mut b = solidcore::topology::Brep::new();
     // Apply SmZoneTol3d's default-sentinel/fabs conversion, then write the member.
@@ -831,6 +858,8 @@ fn rust(input: &Inputs) -> Result<Output, HarnessError> {
         vertex_corner_map: BTreeMap::new(),
         edgeuse_solver_map: BTreeMap::new(),
         self_intersection_handler: None,
+        blend_curve_at_thirds: false,
+        mark_corner_patches: false,
     };
     // The executive constructor sets this after constructing its SmMerge base.
     executive.intersector.ignore_tangency = true;
@@ -853,7 +882,7 @@ fn rust(input: &Inputs) -> Result<Output, HarnessError> {
                 return Ok(deferred);
             }
             match error {
-                SolidError::InvalidInput { .. } => 1007,
+                SolidError::InvalidInput { .. } | SolidError::PortInvariant { .. } => 1007,
                 SolidError::Upstream { code, .. } => code,
                 other => return Err(HarnessError::new(other.to_string())),
             }
@@ -908,7 +937,7 @@ fn rust(input: &Inputs) -> Result<Output, HarnessError> {
             .chain(error_out.comment.bytes())
             .map(f64::from),
     );
-    output(&values)
+    Ok(with_point_step(output(&values)?, rust_point_step(&k)))
 }
 
 impl UnitDiff for Runner {
@@ -916,14 +945,40 @@ impl UnitDiff for Runner {
         "blend.fillet_executive_p3"
     }
     fn cases(&self, ctx: &crate::case::CaseContext) -> Result<Vec<Case>, HarnessError> {
-        let ctx = crate::case::CaseContext {
+        let gen_ctx = crate::case::CaseContext {
             seeds: ctx.seeds.max(256),
             ..ctx.clone()
         };
-        crate::runner::default_cases(self, &ctx)
+        let mut v = crate::runner::default_cases(self, &gen_ctx)?;
+        // the SmApiFilletPreview cases under their own names and seeds, so that each
+        // `gen` case stays the one the baseline has
+        let preview_ctx = crate::case::CaseContext {
+            seeds: ctx.seeds.max(preview::MIN_GENERATED),
+            ..ctx.clone()
+        };
+        for mut c in preview_ctx.generated_cases("blend.fillet_executive_p3:preview", |rng| {
+            Some(serde_json::json!({ "fillet_preview": preview::generate(rng) }))
+        }) {
+            c.unit = self.id().to_string();
+            c.name = c.name.replacen("gen", "preview", 1);
+            v.push(c);
+        }
+        Ok(v)
     }
     fn run_cpp(&self, case: &Case) -> Result<Output, HarnessError> {
         let input = case.parse::<Inputs>()?;
+        if let Some(chamfer) = &input.two_offset_chamfer {
+            if input.mixed_with_chamfer() {
+                return Err(HarnessError::new("mixed fixture forms"));
+            }
+            return two_offset_chamfer::cpp(chamfer);
+        }
+        if let Some(preview) = &input.fillet_preview {
+            if input.mixed_with_preview() {
+                return Err(HarnessError::new("mixed fixture forms"));
+            }
+            return preview::cpp(preview);
+        }
         if let Some(pair) = &input.surface_surface_bodies {
             if input.surface_surface.is_some()
                 || input.real_solid.is_some()
@@ -950,19 +1005,33 @@ impl UnitDiff for Runner {
             if !input.record.is_empty() {
                 return Err(HarnessError::new("mixed fixture forms"));
             }
-            let values =
-                ffi::upstream_fixture(example).map_err(|e| HarnessError::new(e.to_string()))?;
+            let (values, step) = fresh_cpp(|| ffi::upstream_fixture(example))
+                .map_err(|e| HarnessError::new(e.to_string()))?;
             let mut out = Output::new();
             out.ints.insert(
                 "api_status_counts".into(),
                 values.into_iter().map(|v| v as i64).collect(),
             );
-            return Ok(out);
+            return Ok(with_point_step(out, step));
         }
-        output(&ffi::eval(&input.record).map_err(|e| HarnessError::new(e.to_string()))?)
+        let (values, step) =
+            fresh_cpp(|| ffi::eval(&input.record)).map_err(|e| HarnessError::new(e.to_string()))?;
+        Ok(with_point_step(output(&values)?, step))
     }
     fn run_rust(&self, case: &Case) -> Result<Output, HarnessError> {
         let input = case.parse::<Inputs>()?;
+        if let Some(chamfer) = &input.two_offset_chamfer {
+            if input.mixed_with_chamfer() {
+                return Err(HarnessError::new("mixed fixture forms"));
+            }
+            return two_offset_chamfer::rust(chamfer);
+        }
+        if let Some(preview) = &input.fillet_preview {
+            if input.mixed_with_preview() {
+                return Err(HarnessError::new("mixed fixture forms"));
+            }
+            return preview::rust(preview);
+        }
         if let Some(pair) = &input.surface_surface_bodies {
             if input.surface_surface.is_some()
                 || input.real_solid.is_some()
@@ -997,22 +1066,32 @@ impl UnitDiff for Runner {
     }
 }
 
-/// The C++ library's `sdStaticStep` (ND-3: `SmFilletSolver::ComputePointValues`'
-/// function static, fixed by the first call in the process), probed after the case's
-/// C++ run, for the Rust side's [`Kernel::fillet_point_step`] latch. Earlier cases in
-/// the same process (a tangent-point fillet latches `1e-3`) change later C++ results;
-/// the Rust kernel of every case starts from the same value. The probe latches `1e-5`
-/// when nothing has, as the case's own first call would have if the C++ run never
-/// reached the finite-difference step (the Rust run then never reads it either).
-pub(super) fn point_step() -> Result<Option<f64>, HarnessError> {
-    solidcore_ffi::units::blend_fillet_solver_p4::static_step()
-        .map(Some)
-        .map_err(|e| HarnessError::new(format!("sdStaticStep probe: {e}")))
+/// Compared key: the `sdStaticStep` latch (ND-3: `SmFilletSolver::ComputePointValues`'
+/// function static, fixed by the first call in a process) after the case.
+pub(super) const POINT_STEP: &str = "fillet_point_step";
+
+/// Runs a case's C++ calls in a fresh child process, so `sdStaticStep` starts unlatched
+/// as on a first call whatever ran before, and returns the record with the step the case
+/// left latched there (`1e-5` when it latched nothing). The step is a compared output
+/// only ([`POINT_STEP`]); the Rust side never sees it.
+pub(super) fn fresh_cpp(
+    case: impl FnOnce() -> Result<Vec<f64>, solidcore_ffi::FfiError>,
+) -> Result<(Vec<f64>, f64), solidcore_ffi::FfiError> {
+    solidcore_ffi::units::blend_fillet_solver_p4::with_fresh_static_step(case)
 }
 
-/// A fresh kernel whose `sdStaticStep` latch holds the C++ library's (see [`point_step`]).
-pub(super) fn seeded_kernel() -> Result<Kernel, HarnessError> {
-    let k = Kernel::default();
-    k.fillet_point_step.set(point_step()?);
-    Ok(k)
+/// The Rust side's [`Kernel::fillet_point_step`] after a case run on a fresh kernel,
+/// read as the C++ probe reads `sdStaticStep`: the probe's finite-difference crossing
+/// point latches `1e-5` when nothing has.
+pub(super) fn rust_point_step(k: &Kernel) -> f64 {
+    k.fillet_point_step.get().unwrap_or(1.0e-5)
+}
+
+/// `out` with the case's latched step ([`POINT_STEP`]); a deferred or rejected output is
+/// returned unchanged.
+pub(super) fn with_point_step(mut out: Output, step: f64) -> Output {
+    if out.deferred.is_none() && out.rejected.is_none() {
+        out.values.insert(POINT_STEP.into(), vec![step]);
+    }
+    out
 }

@@ -35,7 +35,7 @@
 //! | [`GlobalSolver::identical_solutions_in`]     | `SmGlobalSolver::IdenticalSolutions` (object domains read through a caller's resolver) |
 //!
 //! Deviations:
-//! - WR-454 (#525): `fixes.perspective_sphere_offsets` opts into projecting each
+//! - WR-589 (#525): `fixes.perspective_sphere_offsets` opts into projecting each
 //!   sphere's own radius vectors about its own center; default uses pinned C++.
 //! - **Virtual methods.** Derived solvers (curve/curve, surface/surface, ...)
 //!   implement [`GlobalSolve`] and override its hooks; the base behaviour lives
@@ -433,6 +433,9 @@ pub fn resolve_object_zone_tol_3d<O>(
         Some(r) => r.get(object),
         // UNPORTED(geom.tol): SmTol::GetZoneTol3d(const SmObject*) on a handle the
         // caller gave no resolver for
+        // Proof (unreachable): only Rayfire solvers read this; the library ones
+        // (offset_geometry_creation, brep p2) pass a resolver or override
+        // object_zone_tol_3d; 0 hits in the green difftest sweep.
         None => Err(SolidError::Unported {
             upstream: "SmTol::GetZoneTol3d(const SmObject*)",
             unit: "geom.tol",
@@ -1503,7 +1506,7 @@ fn max_projected_radius_sq(
     let [plane_point, plane_normal, eye_point] = view;
     let mut new_rad_max_sq = 0.0;
     for offset in [dir1 * radius, -dir1 * radius, dir2 * radius, -dir2 * radius] {
-        // WR-454: the vector API already adds its base to the offset.
+        // WR-589: the vector API already adds its base to the offset.
         let vector = if fix_offsets { offset } else { center + offset };
         let rad_vec =
             vector.perspective_project_to_plane(base, plane_point, plane_normal, eye_point);
