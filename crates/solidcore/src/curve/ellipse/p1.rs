@@ -45,9 +45,10 @@
 //! | [`PolarConversion::write_to_db`]                   | `SmPolarConversion::WriteToDB`                    |
 //!
 //! Deviations:
-//! - **Collapsed STEP edits (#428).** Non-finite or inverted STEP intervals and a
-//!   conversion to an empty/non-finite NURBS interval are rejected before changing
-//!   the ellipse, instead of leaving a curve that a later edit turns into NaN knots.
+//! - **Collapsed STEP edits (#428).** `Kernel::fixes.ellipse_step_interval_checks`
+//!   rejects inverted STEP edits and empty/non-finite converted NURBS intervals
+//!   before mutation. Default finite-input behavior stays pinned C++; non-finite
+//!   source intervals are always refused.
 //! - **Circle class.** `SmCircle` derives from `SmEllipse` without data of its own;
 //!   it is an [`Ellipse`] whose `circle` flag is set ([`Ellipse::is_circle_class`]),
 //!   which picks the circle's type, its `IsKindOf`, `IsArc`, `CreateSimpleOffset` and
@@ -1904,8 +1905,9 @@ impl Ellipse {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` for a non-finite/inverted STEP interval or when its endpoints
-    /// map to the same NURBS parameter (nothing changed). Those of
+    /// `InvalidInput` for a non-finite source interval. With
+    /// `Kernel::fixes.ellipse_step_interval_checks`, also for an inverted interval
+    /// or endpoints that map to one NURBS parameter (nothing changed). Those of
     /// [`PolarConversion::convert_to_nurbs_parameter`] (nothing changed) and
     /// [`Self::make_nurb_owned`] (the new domain is kept).
     pub fn adjust_step_interval(
@@ -1917,11 +1919,17 @@ impl Ellipse {
         if !new_interval.min().is_finite()
             || !new_interval.max().is_finite()
             || !new_interval.length().is_finite()
-            || new_interval.length() < 0.0
         {
             return Err(SolidError::invalid_input(
                 OP_ADJUST,
-                "STEP interval must have finite endpoints and nonnegative finite length",
+                "STEP interval must have finite endpoints and finite length",
+            ));
+        }
+
+        if k.fixes.ellipse_step_interval_checks && new_interval.length() < 0.0 {
+            return Err(SolidError::invalid_input(
+                OP_ADJUST,
+                "STEP interval must have nonnegative length",
             ));
         }
 
@@ -1948,12 +1956,14 @@ impl Ellipse {
         let new_nurbs_ivl = Extent1d::from_min_max(nurbs_t0, nurbs_t1);
         // The polar converter clamps out-of-arc angles to the old endpoints.
         // Distinct STEP angles can therefore map to one NURBS parameter. Do not
-        // install that zero-length interval: the next reparameterization divides
+        // install that zero-length interval with the opt-in: the next edit divides
         // by its length and creates NaN interior knots (#428 / WR-211).
-        if !nurbs_t0.is_finite()
-            || !nurbs_t1.is_finite()
-            || !new_nurbs_ivl.length().is_finite()
-            || new_nurbs_ivl.length() <= 0.0
+        // The default preserves the pinned C++ result, including legacy probes.
+        if k.fixes.ellipse_step_interval_checks
+            && (!nurbs_t0.is_finite()
+                || !nurbs_t1.is_finite()
+                || !new_nurbs_ivl.length().is_finite()
+                || new_nurbs_ivl.length() <= 0.0)
         {
             return Err(SolidError::invalid_input(
                 OP_ADJUST,
@@ -2323,8 +2333,17 @@ mod tests {
     /// parameter must fail before it collapses the curve or poisons later edits.
     #[test]
     fn step_interval_past_a_turn_is_rejected_without_changing_the_curve() {
-        let k = kernel();
         let past = Extent1d::from_min_max(360.0, 540.0);
+        let defaults = kernel();
+        assert!(!defaults.fixes.ellipse_step_interval_checks);
+        let mut legacy = circle(&defaults, 0.0, 360.0, 2.0);
+        legacy.adjust_step_interval(&defaults, &past, None).unwrap();
+        assert_eq!(legacy.anal_domain, past);
+        // Pinned C++ accepts this finite edit and collapses the NURBS domain.
+        assert_eq!(legacy.base.natural_interval().length(), 0.0);
+
+        let mut k = kernel();
+        k.fixes.ellipse_step_interval_checks = true;
         for end in [360.0, 180.0] {
             let mut c = circle(&k, 0.0, end, 2.0);
             let old_domain = c.anal_domain;
@@ -2347,7 +2366,8 @@ mod tests {
 
     #[test]
     fn invalid_step_interval_is_rejected_before_an_ellipse_edit() {
-        let k = kernel();
+        let mut k = kernel();
+        k.fixes.ellipse_step_interval_checks = true;
         // An equal-angle request is not retained as a point arc: MakeNurb
         // expands it to a full turn, while the old converter still gives a
         // zero-length NURBS interval. Reject it rather than creating that pair.

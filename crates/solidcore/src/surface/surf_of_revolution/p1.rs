@@ -2103,7 +2103,8 @@ mod tests {
 
     #[test]
     fn rejected_shifted_generator_interval_preserves_the_revolution() {
-        let k = k();
+        let mut k = k();
+        k.fixes.ellipse_step_interval_checks = true;
         for swap in [false, true] {
             let g = Ellipse::new_circle(
                 &k,
