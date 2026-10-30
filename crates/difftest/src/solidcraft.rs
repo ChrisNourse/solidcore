@@ -1424,6 +1424,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
     let field = match name {
         "sweep_frame_on_planar_path_normal" => &mut k.fixes.sweep_frame_on_planar_path_normal,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
+        "fillet_cleanup_removes_input_slits" => &mut k.fixes.fillet_cleanup_removes_input_slits,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
         "fillet_refuse_ball_not_fitting" => &mut k.fixes.fillet_refuse_ball_not_fitting,
