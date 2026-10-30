@@ -6,12 +6,10 @@
 //! where a continuation would not be exact; `NotExact` tells. A side edge on a line runs
 //! on along that line.
 //!
-//! Two bodies. A 20 mm cube with its top front edge rounded r 2: every side edge is a
-//! line and every face a plane, so the exact-only removal gives the sharp cube back, the
-//! same as upstream's. The cube united with a cylinder r 12 about (0, 10) that bulges
-//! through its front face, the cube's top front edge (which ends on the cylinder) rounded
-//! r 2: at the cylinder end the side edge on the top face is an arc, so the exact-only
-//! removal of the round is refused with `not_exact`, the body unchanged.
+//! A 20 mm cube with its top front edge rounded r 2: every side edge is a line and every
+//! face a plane, so the exact-only removal gives the sharp cube back, the same as
+//! upstream's. The refusals are tested on the upstream fixture solids, in the
+//! `blend.fillet_removal` runner's `exact_only_tests`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -21,9 +19,8 @@
 
 use solidcore::blend::fillet_executive::api::fillet_edges;
 use solidcore::blend::fillet_removal::FilletRemoval;
-use solidcore::boolean::api_brep::boolean_union;
-use solidcore::math::{Point3, Vec3};
-use solidcore::primitive::api_primitives::{create_box, create_cylinder};
+use solidcore::math::Point3;
+use solidcore::primitive::api_primitives::create_box;
 use solidcore::surface::plane::Plane;
 use solidcore::topology::face::p2 as face2;
 use solidcore::topology::{edge, vertex, Brep, EdgeId, FaceId};
@@ -86,19 +83,6 @@ fn rounded_cube(k: &mut Kernel) -> Brep {
     b
 }
 
-/// The cube united with the cylinder r 12, h 20 about (0, 10), its top front edge (from
-/// the cylinder to x 20) rounded r 2.
-fn rounded_cube_on_cylinder(k: &mut Kernel) -> Brep {
-    let cube = create_box(k, Point3::new(0.0, 0.0, 0.0), 20.0, 20.0, 20.0).unwrap();
-    let cylinder = create_cylinder(k, Vec3::new(0.0, 10.0, 0.0), 12.0, 20.0).unwrap();
-    let mut b = boolean_union(k, cube, cylinder).unwrap();
-    let e = edge_where(&b, |p| {
-        p.y.abs() < 1e-9 && (p.z - 20.0).abs() < 1e-9 && p.x > 1.0
-    });
-    fillet_edges(k, &mut b, &[e], 2.0, 1, 1, 1.0).unwrap();
-    b
-}
-
 #[test]
 fn exact_only_is_off_by_default() {
     let mut k = Kernel::default();
@@ -142,24 +126,4 @@ fn exact_only_removal_on_lines_and_planes_is_upstreams() {
             assert!((p[i] - q[i]).abs() <= 1e-9, "{p:?} vs {q:?}");
         }
     }
-}
-
-#[test]
-fn exact_only_refuses_an_arc_side_edge_and_changes_nothing() {
-    let mut k = Kernel::default();
-    let count = curved_faces(&rounded_cube_on_cylinder(&mut k)).len();
-    let mut refused = 0;
-    for i in 0..count {
-        let mut k = Kernel::default();
-        let mut b = rounded_cube_on_cylinder(&mut k);
-        let f = curved_faces(&b)[i];
-        let before = snapshot(&b);
-        let (r, not_exact) = remove(&mut k, &mut b, f, true);
-        if not_exact {
-            assert!(r.is_err(), "face {i}: not exact but removed");
-            assert_eq!(snapshot(&b), before, "face {i}: refused but changed");
-            refused += 1;
-        }
-    }
-    assert!(refused >= 1, "no curved face was refused as not exact");
 }
