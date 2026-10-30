@@ -1451,6 +1451,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_rails_meet_at_one_end_point" => &mut k.fixes.fillet_rails_meet_at_one_end_point,
         "fillet_nx1_tangent_side_edge" => &mut k.fixes.fillet_nx1_tangent_side_edge,
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
+        "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
