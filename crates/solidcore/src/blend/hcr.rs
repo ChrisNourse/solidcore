@@ -54,7 +54,8 @@
 //!   uninitialised: `InvalidInput`), UB-170 (the silhouette-edge loop of
 //!   `IntersectCurveWithSilhouettes` is bounded by the vertex count: the port
 //!   stops at the edge list's end instead of reading past it; fewer vertices than
-//!   edges still skips edges, as upstream). Outputs that a failed callee leaves uninitialised upstream return
+//!   edges still skips edges, as upstream). Outputs that a failed callee leaves
+//!   uninitialised upstream return
 //!   `InvalidInput` instead of being read.
 //! - `ComputeGlobalVisibility`'s copy of edge and face attributes onto the edge curves
 //!   (display colours) is not ported: curves carry no attribute list here.
@@ -1937,6 +1938,58 @@ mod tests {
         assert_eq!(h.sil_edge_tree.objects_in_box(&bbox).unwrap().len(), 1);
         let mut cc = new_curve_classification(&k, HcrObject::Curve(e), ivl, tol);
         h.intersect_curve_with_silhouettes(&k, &mut cc).unwrap();
+    }
+
+    #[test]
+    fn silhouette_query_with_more_vertices_splits_at_the_available_edge() {
+        use crate::primitive::api_curves::create_line_segment;
+        use crate::topology::brep::p5::create_wire_edge_from_curve;
+
+        let mut k = Kernel::default();
+        let mut scene = Brep::new();
+        let region = scene
+            .add_region_record(crate::topology::Region::default())
+            .unwrap();
+        scene.set_infinite_region(Some(region));
+        let target = Curve::from(
+            create_line_segment(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)).unwrap(),
+        );
+        let ivl = target.natural_interval();
+        let e = create_wire_edge_from_curve(&mut k, &mut scene, target, ivl).unwrap();
+        let silhouette = Curve::from(
+            create_line_segment(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 1.0)).unwrap(),
+        );
+        let sil_ivl = silhouette.natural_interval();
+        let sil = create_wire_edge_from_curve(&mut k, &mut scene, silhouette, sil_ivl).unwrap();
+        let tol = edge::tolerance(&scene, e).unwrap();
+        let bbox = Extent3d::from_points(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 1.0));
+        let mut h = Hcr::from_scene(
+            &k,
+            scene,
+            &Axis2Placement::default(),
+            bbox,
+            HcrOptions {
+                approx_tol_3d: 1e-3,
+                ang_tol_rad: 0.1,
+                display_seams: true,
+                display_smooth_edges: true,
+            },
+        );
+        h.add_silhouette_edge(&k, sil).unwrap();
+        assert_eq!(h.sil_vertex_tree.objects_in_box(&bbox).unwrap().len(), 2);
+        assert_eq!(h.sil_edge_tree.objects_in_box(&bbox).unwrap().len(), 1);
+        let mut cc = new_curve_classification(&k, HcrObject::Curve(e), ivl, tol);
+        h.intersect_curve_with_silhouettes(&k, &mut cc).unwrap();
+
+        // Only the edge crosses the target in projection. The two silhouette
+        // endpoints do not, so skipping the available edge would leave one interval.
+        assert_eq!(cc.size(), 2);
+        let crossing = &cc.at(0).unwrap().end;
+        assert_eq!(crossing.point_class(), PointClassType::Edge);
+        assert_eq!(crossing.object(), Some(HcrObject::Edge(sil)));
+        let midpoint = (ivl.min() + ivl.max()) / 2.0;
+        assert!((crossing.t_param() - midpoint).abs() < 1e-12);
+        assert_eq!(cc.at(1).unwrap().start.object(), crossing.object());
     }
 
     #[test]

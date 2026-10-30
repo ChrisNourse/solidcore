@@ -47,3 +47,29 @@ The affected sweep caller passes: 703 total, 694 passed with values, 0 failed,
 3.62089958464889e-14. This does not establish the complete bottle-sweep repair:
 the private corrected native probe still produced an invalid bottle result, as
 recorded in `plan/upstream-issues/UB-170--addendum-2026-10-29-bottle-sweep.md`.
+
+## Validation update after correcting native-guard reporting
+
+The runner now maps only an empty native status -2 record to the existing
+`Output::rejected` outcome. The C++ crash/null-topology guards, all case definitions
+and tolerances are unchanged. A nonempty native operation record with status -2
+remains an operation result; a regression checks that distinction.
+
+Standalone result on the original claim base:
+`PASS blend.hcr cases=434 passed=417 failed=0 deferred=0 max_rel_err=0e0 with_values=389 no_values=28 vacuous=0 rejected=17`.
+The two runner tests pass, including direct independent Rust execution of all 17
+rejected inputs and separate checks that native refuses them. C++-enabled Clippy
+passes. The kernel's two focused regressions pass; the crossing-wire case has two
+queried vertices and one edge and verifies two intervals meeting at the projected
+crossing with an Edge classification. Its initial fixture lacked an infinite
+region and failed during wire construction; adding that required region corrected
+the fixture. The successful test reaches the HCR operation.
+
+The exact-base CI artifact is run 40839496384, main commit
+`fa3caa94760625a65bfe6390531d62d5e8b770db`. Comparing reports with matching seeds 16
+fails the ratchet for all 17 listed cases: each was a pass in that artifact and is
+now rejected. The old cases compared the guard sentinel, not native operation
+geometry; nevertheless the existing ratchet forbids pass-to-rejected transitions.
+No waiver, fabricated baseline, case removal or tolerance change has been added.
+The plan status remains blocked until this reporting migration is resolved under
+the repository gate. Standalone parity success is not full-gate readiness.
