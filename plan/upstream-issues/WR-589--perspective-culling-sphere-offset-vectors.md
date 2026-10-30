@@ -14,4 +14,4 @@
   `gen0207`; caller `curve.curve_p9/gen0415`; details in [findings #525](../findings/general--525-flat-corners-perspective-bounds.md), PR #684).
 - **Rust port:** opt in with `Kernel::fixes.perspective_sphere_offsets` to use each sphere's own radius and center and project offset vectors. The default remains pinned C++ behavior.
 
-The review requested WR-445, but main now uses that ID for the fillet-corner setback defect. WR-589 is free across main and the open PR inventory checked on 2026-10-26.
+WR-260, the review-suggested WR-445 and the previous WR-454 are occupied on main. This PR uses WR-589, the next number after the highest record on main `901089a23`, checked on 2026-10-30. Existing records and their references are preserved.

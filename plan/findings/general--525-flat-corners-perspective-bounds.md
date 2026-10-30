@@ -41,5 +41,5 @@ Earlier native runs confirmed the reference defects on these exact inputs:
 
 No new known mismatch or status downgrade is needed: ordinary differential runners
 use default fixes. No comparison is dropped or tolerance widened. The new issue
-record uses WR-589: both the former WR-260 and the review's proposed WR-445 were
-already occupied on main when this branch was updated.
+record uses WR-589: the former WR-260, the review's proposed WR-445 and the
+previous WR-454 were occupied on main at the 2026-10-30 update.
