@@ -1902,6 +1902,9 @@ impl Ellipse {
     /// Makes `new_interval` (degrees) the STEP domain and rebuilds the NURB over it,
     /// reparameterised to the NURB parameters the old table gives the new domain ends
     /// (`AdjustSTEPInterval`); nothing when the domains agree within `SM_EFF_ZERO`.
+    /// The old table clamps an end outside the current arc to the arc's ends (WR-211);
+    /// with [`crate::kernel::UpstreamFixes::ellipse_adjust_step_interval_keeps_turns`]
+    /// such an end is converted by [`Self::step_to_nurbs_keeping_turns`] instead.
     ///
     /// # Errors
     ///
@@ -1945,14 +1948,21 @@ impl Ellipse {
         let step_t1 = new_interval.max();
 
         // After these calls, the conversion may not be reciprocal.
-        let nurbs_t0 = self
-            .polar
-            .convert_to_nurbs_parameter(k, self, step_t0, 0.0)?
-            .0;
-        let nurbs_t1 = self
-            .polar
-            .convert_to_nurbs_parameter(k, self, step_t1, 0.0)?
-            .0;
+        let (nurbs_t0, nurbs_t1) = if k.fixes.ellipse_adjust_step_interval_keeps_turns {
+            (
+                self.step_to_nurbs_keeping_turns(k, step_t0)?,
+                self.step_to_nurbs_keeping_turns(k, step_t1)?,
+            )
+        } else {
+            (
+                self.polar
+                    .convert_to_nurbs_parameter(k, self, step_t0, 0.0)?
+                    .0,
+                self.polar
+                    .convert_to_nurbs_parameter(k, self, step_t1, 0.0)?
+                    .0,
+            )
+        };
         let new_nurbs_ivl = Extent1d::from_min_max(nurbs_t0, nurbs_t1);
         // The polar converter clamps out-of-arc angles to the old endpoints.
         // Distinct STEP angles can therefore map to one NURBS parameter. Do not
@@ -1983,6 +1993,48 @@ impl Ellipse {
 
         // all done
         Ok(())
+    }
+
+    /// The NURBS parameter of the STEP angle `step_t` (degrees) for
+    /// [`Self::adjust_step_interval`] under
+    /// [`crate::kernel::UpstreamFixes::ellipse_adjust_step_interval_keeps_turns`] (the
+    /// fork's `ConvertAngle`, tangency-labs/smlib@5c0b5ed): inside the current arc (or for
+    /// an arc of no length) the polar converter's; outside a full-turn arc, the angle taken
+    /// whole turns back into the arc, its parameter moved by the NURBS length per turn
+    /// (negated when inside out); outside a partial arc, the arc's NURBS interval continued
+    /// in proportion to the angle.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`PolarConversion::convert_to_nurbs_parameter`].
+    fn step_to_nurbs_keeping_turns(&self, k: &Kernel, step_t: f64) -> Result<f64> {
+        let old_step = self.anal_domain;
+        let old_nurbs = self.base.natural_interval();
+        let span = old_step.length();
+        if old_step.contains_value(step_t, EFF_ZERO_DEG)
+            || span.partial_cmp(&EFF_ZERO_DEG) != Some(core::cmp::Ordering::Greater)
+        {
+            return Ok(self
+                .polar
+                .convert_to_nurbs_parameter(k, self, step_t, 0.0)?
+                .0);
+        }
+        let sign = if self.inside_out { -1.0 } else { 1.0 };
+        if (span - 360.0).abs() < EFF_ZERO_DEG {
+            let turns = ((step_t - old_step.min()) / 360.0).floor();
+            let inside = old_step.clamp_value(step_t - turns * 360.0);
+            let nurbs_t = self
+                .polar
+                .convert_to_nurbs_parameter(k, self, inside, 0.0)?
+                .0;
+            return Ok(nurbs_t + sign * turns * old_nurbs.length());
+        }
+        let fraction = (step_t - old_step.min()) / span;
+        Ok(if self.inside_out {
+            old_nurbs.max() - fraction * old_nurbs.length()
+        } else {
+            old_nurbs.min() + fraction * old_nurbs.length()
+        })
     }
 
     /// The points of the ellipse solving `operation` for `test_point`, as STEP angles
@@ -2364,6 +2416,29 @@ mod tests {
         }
     }
 
+    /// The refusal policy also accepts a valid mapping supplied by main's
+    /// turn-preserving opt-in (#1846); the flags can be enabled together.
+    #[test]
+    fn step_interval_checks_allow_turn_preserving_mapping() {
+        let mut k = kernel();
+        k.fixes.ellipse_step_interval_checks = true;
+        k.fixes.ellipse_adjust_step_interval_keeps_turns = true;
+        let past = Extent1d::from_min_max(360.0, 540.0);
+        for end in [360.0, 180.0] {
+            let mut c = circle(&k, 0.0, end, 2.0);
+            c.adjust_step_interval(&k, &past, None).unwrap();
+            assert_eq!(c.anal_domain, past);
+            let natural = c.base.natural_interval();
+            assert!(natural.length() > 0.0);
+            let start = c.base.evaluate_point(natural.min()).unwrap();
+            let finish = c.base.evaluate_point(natural.max()).unwrap();
+            assert!((start - Point3::new(3.0, 2.0, 3.0)).length() < 1e-12);
+            assert!((finish - Point3::new(-1.0, 2.0, 3.0)).length() < 1e-12);
+            c.edit_parameterization(&k, &past, true, None).unwrap();
+            assert!(c.base.gw_nurb().unwrap().knots().iter().all(|v| v.is_finite()));
+        }
+    }
+
     #[test]
     fn invalid_step_interval_is_rejected_before_an_ellipse_edit() {
         let mut k = kernel();
@@ -2388,6 +2463,40 @@ mod tests {
             assert_eq!(c.anal_domain, Extent1d::from_min_max(0.0, 360.0));
             assert_eq!(c.base.gw_nurb().unwrap(), &old);
         }
+    }
+
+    /// #428 (`WR-211`) with `ellipse_adjust_step_interval_keeps_turns` (the fork's
+    /// tangency-labs/smlib@5c0b5ed): a full circle moved a turn on to `[360, 540]` keeps
+    /// half its NURBS length and starts where angle 0 is; a half circle moved there
+    /// continues its NURBS interval in proportion. The knots stay finite.
+    #[test]
+    fn step_interval_past_a_turn_keeps_its_length_with_the_fix() {
+        let mut k = kernel();
+        k.fixes.ellipse_adjust_step_interval_keeps_turns = true;
+        let past = Extent1d::from_min_max(360.0, 540.0);
+        for d1 in [360.0, 180.0] {
+            let mut c = circle(&k, 0.0, d1, 2.0);
+            c.adjust_step_interval(&k, &past, None).unwrap();
+            assert_eq!(c.anal_domain, past);
+            let nat = c.base.natural_interval();
+            assert!(nat.max() > nat.min(), "[0, {d1}]");
+            // the start is angle 0 again, the end angle 180: (1, 2, 3) +- 2 x
+            let start = c.base.evaluate_point(nat.min()).unwrap();
+            let end = c.base.evaluate_point(nat.max()).unwrap();
+            assert!(
+                (start - Point3::new(3.0, 2.0, 3.0)).length() < 1e-12,
+                "{start:?}"
+            );
+            assert!(
+                (end - Point3::new(-1.0, 2.0, 3.0)).length() < 1e-12,
+                "{end:?}"
+            );
+        }
+        let mut c = circle(&k, 0.0, 360.0, 2.0);
+        c.adjust_step_interval(&k, &past, None).unwrap();
+        c.base.edit_parameterization(&past).unwrap();
+        let (knots, _) = c.base.knots(None).unwrap();
+        assert!(knots.iter().all(|x| x.is_finite()), "{knots:?}");
     }
 
     #[test]

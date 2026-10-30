@@ -22,3 +22,5 @@ the three affected unit statuses return to main's states. Rust regressions check
 both default compatibility and enabled refusal, preserved curve/domain data,
 finite retry and revolution rollback in both UV orientations. General periodic
 range extension remains outside this change.
+
+Main's #1846 separately adds `ellipse_adjust_step_interval_keeps_turns`. The checks run after that mapping when both switches are enabled; `step_interval_checks_allow_turn_preserving_mapping` verifies full- and half-circle edits, endpoint geometry and a finite subsequent reparameterization. This policy remains a refusal safeguard, not a replacement for the turn-preserving mapping.
