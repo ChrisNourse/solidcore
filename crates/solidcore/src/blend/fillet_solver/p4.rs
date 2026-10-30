@@ -1990,13 +1990,15 @@ fn c3_make_intersector<'s>(
 
 /// :2054-2090: the trace locals (tolerances, `sDir = sPVSt[1]`); a TANGENT last point
 /// reverses `st.tsect_pnts`, sets `sDir = -sPVEn[1]` and `bReverseTracing`; the local
-/// extension flags from the solver's.
+/// extension flags from the solver's. With
+/// `Kernel::fixes.fillet_trace_from_tangent_point_toward_next` (WR-603) a TANGENT first
+/// point starts the trace toward the next point.
 fn c3_trace_start(
     ops: &mut dyn FilletSolverOps,
     cx: &mut Cx<'_>,
     st: &mut CalcState,
 ) -> Result<()> {
-    use crate::intersect::surface_intersector::p1::IntersectionPointType;
+    use crate::intersect::surface_intersector::p1::{IntersectionPointType, SrfIndex};
 
     let solver = ops.solver();
     st.trace.approx_tol_3d = solver.this_approx_tol_3d();
@@ -2016,6 +2018,27 @@ fn c3_trace_start(
         }
     }
 
+    // `fixes.fillet_trace_from_tangent_point_toward_next` (WR-603): a trace whose first
+    // through point is a tangent point starts toward the next through point (the chord
+    // between their points on the first offset surface): the offsets touch there and the
+    // edge's end tangent can be the line along which they touch to second order.
+    if cx.k.fixes.fillet_trace_from_tangent_point_toward_next && st.tsect_pnts.len() > 1 {
+        if let (Some(&first), Some(&next)) = (st.tsect_pnts.first(), st.tsect_pnts.get(1)) {
+            let first = st.store.get(cx.fillets, first)?;
+            if first.point_type == IntersectionPointType::TangentPoint {
+                let uv_from = first.uv_pos(SrfIndex::First);
+                let uv_to = st.store.get(cx.fillets, next)?.uv_pos(SrfIndex::First);
+                let from = offset_evaluate_point(cx.k, ops, 0, uv_from)?;
+                let to = offset_evaluate_point(cx.k, ops, 0, uv_to)?;
+                let chord = to - from;
+                if chord.length() > st.trace.approx_tol_3d {
+                    st.trace.dir = chord;
+                }
+            }
+        }
+    }
+
+    let solver = ops.solver();
     st.trace.extend_before = solver.extend_before;
     st.trace.extend_after = solver.extend_after;
     Ok(())
@@ -2333,6 +2356,46 @@ mod tests_c3 {
         // the locals copy the solver's flags (C4 swaps them per pass)
         assert!(!st.trace.extend_before);
         assert!(st.trace.extend_after);
+    }
+
+    /// WR-603: two points, the first a tangent point, at uv `(0.2, 0.3)` and
+    /// `(0.6, 0.7)` of the first surface; the trace start direction with and without
+    /// `fixes.fillet_trace_from_tangent_point_toward_next`, and the chord between the
+    /// points on the first offset surface.
+    fn traced_from_tangent_first(fix: bool) -> (Vec3, Vec3) {
+        use crate::intersect::surface_intersector::p1::SrfIndex;
+
+        let mut k = Kernel::default();
+        k.fixes.fillet_trace_from_tangent_point_toward_next = fix;
+        let (a, b) = planes();
+        let mut fs = solver(&k, &a, &b);
+        let mut st = state(line(), [a, b]);
+        let (uv0, uv1) = (Point2::new(0.2, 0.3), Point2::new(0.6, 0.7));
+        let mut p = TsectPnt::new();
+        p.point_type = IntersectionPointType::TangentPoint;
+        *p.uv_pos_mut(SrfIndex::First) = uv0;
+        let r0 = st.store.alloc(p.clone());
+        p.point_type = IntersectionPointType::Crossing;
+        *p.uv_pos_mut(SrfIndex::First) = uv1;
+        let r1 = st.store.alloc(p);
+        st.tsect_pnts = vec![r0, r1];
+        with_cx(&k, |cx| c3_trace_start(&mut fs, cx, &mut st)).unwrap();
+        assert_eq!(st.tsect_pnts, vec![r0, r1]);
+        assert!(!st.trace.reverse_tracing);
+        let from = offset_evaluate_point(&k, &mut fs, 0, uv0).unwrap();
+        let to = offset_evaluate_point(&k, &mut fs, 0, uv1).unwrap();
+        (st.trace.dir, to - from)
+    }
+
+    #[test]
+    fn trace_from_a_tangent_first_point_starts_toward_the_next_with_the_fix() {
+        let (dir, chord) = traced_from_tangent_first(true);
+        assert_eq!(dir, chord);
+        assert!(chord.length() > 0.1, "{chord:?}");
+        // upstream: the filleted edge's start tangent
+        let (dir, chord) = traced_from_tangent_first(false);
+        assert_eq!(dir, state(line(), planes().into()).pv_start[1]);
+        assert_ne!(dir, chord);
     }
 
     #[test]

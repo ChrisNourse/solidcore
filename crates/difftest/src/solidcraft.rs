@@ -1428,6 +1428,9 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
         "fillet_refuse_ball_not_fitting" => &mut k.fixes.fillet_refuse_ball_not_fitting,
         "cone_parallel_line_midpoint" => &mut k.fixes.cone_parallel_line_midpoint,
+        "fillet_trace_from_tangent_point_toward_next" => {
+            &mut k.fixes.fillet_trace_from_tangent_point_toward_next
+        }
         "analytic_copy_keeps_parameterization" => &mut k.fixes.analytic_copy_keeps_parameterization,
         "precise_properties_body_length_scale" => &mut k.fixes.precise_properties_body_length_scale,
         "boolean_wire_edge_keeps_faceuse_shell" => {
