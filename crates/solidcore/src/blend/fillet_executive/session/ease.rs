@@ -2,7 +2,7 @@
 //!
 //! Upstream: the fork tangency-labs/smlib `e74bbd3` (`SmFilletExecutive::EaseSetBackSections`
 //! and its helpers in `source/SMLib/src/SmFilletExecutive.cpp`, `SmFilletCorner::m_dEaseDist`
-//! in `source/SMLib/inc/SmFilletCorner.h`); not in SMLib at the pin (WR-604,
+//! in `source/SMLib/inc/SmFilletCorner.h`); not in SMLib at the pin (WR-616,
 //! tangency-labs/solidcore#1376).
 //!
 //! | Rust | Upstream (fork) |

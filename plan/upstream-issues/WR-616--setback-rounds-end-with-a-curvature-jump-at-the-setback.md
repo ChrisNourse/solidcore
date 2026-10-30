@@ -1,4 +1,4 @@
-#### WR-604. A set-back corner's rounds end at their circular section, so a curvature-continuous corner fill cannot meet them or the faces at the hole's corners
+#### WR-616. A set-back corner's rounds end at their circular section, so a curvature-continuous corner fill cannot meet them or the faces at the hole's corners
 - **Severity:** Wrong result (a shape limitation, no failure)
 - **Area:** Blends
 - **Location:** `source/SMLib/src/SmFilletExecutive.cpp`, `SmFilletExecutive::CreateFilletBrep` (each round keeps its own circular cross-section up to the setback); `source/SMLib/src/SmFilletGeom.cpp`, `SmFilletEdge::CalcRailRailInterpolation` (the face curve is the conic of `sm_InterpolateEndptsAndTangents`; the G2/G3 fairing branch after `else if (TRUE/*eFSGType == SM_FSG_CIRCULAR*/)` is unreachable).
