@@ -1427,10 +1427,12 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "imprint_extension_keeps_analytic_curve" => {
             &mut k.fixes.imprint_extension_keeps_analytic_curve
         }
+        "delete_vertex_joins_seam_iso_curve" => &mut k.fixes.delete_vertex_joins_seam_iso_curve,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
         "fillet_refuse_ball_not_fitting" => &mut k.fixes.fillet_refuse_ball_not_fitting,
+        "fillet_torus_rail_on_axis" => &mut k.fixes.fillet_torus_rail_on_axis,
         "cone_parallel_line_midpoint" => &mut k.fixes.cone_parallel_line_midpoint,
         "analytic_copy_keeps_parameterization" => &mut k.fixes.analytic_copy_keeps_parameterization,
         "precise_properties_body_length_scale" => &mut k.fixes.precise_properties_body_length_scale,
@@ -1447,6 +1449,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "stitch_solid_nests_cavities" => &mut k.fixes.stitch_solid_nests_cavities,
         "sphere_small_circle_not_touching" => &mut k.fixes.sphere_small_circle_not_touching,
         "curve_tight_box_interval_knots" => &mut k.fixes.curve_tight_box_interval_knots,
+        "fillet_rails_meet_at_one_end_point" => &mut k.fixes.fillet_rails_meet_at_one_end_point,
         "fillet_nx1_tangent_side_edge" => &mut k.fixes.fillet_nx1_tangent_side_edge,
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
