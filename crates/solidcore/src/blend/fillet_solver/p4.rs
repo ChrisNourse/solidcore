@@ -3639,15 +3639,20 @@ fn c6_compute_point_values(
             None
         };
 
-        // :3664 central difference, or one-sided at a domain end
+        // :3664 central difference, or one-sided at a domain end. With
+        // `fixes.fillet_tangent_point_one_sided_step` (WR-595) a tangent point, where the
+        // intersection curve ends or branches, takes the forward step alone when it found
+        // one (`bFoundForw && bFoundBack && !bTangentPoint`).
+        let tangent_point = k.fixes.fillet_tangent_point_one_sided_step
+            && point.point_type == IntersectionPointType::TangentPoint;
         let (step_pt_forw, step_pt_back) = match (forw_pts, back_pts) {
-            (Some((f0, f1)), Some((b0, b1))) => {
+            (Some((f0, f1)), Some((b0, b1))) if !tangent_point => {
                 let fw = (f0 + f1) / 2.0;
                 let bk = (b0 + b1) / 2.0;
                 step *= 2.0; // 2.0 * dStep (multiplication commutes exactly)
                 (fw, bk)
             }
-            (Some((f0, f1)), None) => ((f0 + f1) / 2.0, point.crv_pos()),
+            (Some((f0, f1)), _) => ((f0 + f1) / 2.0, point.crv_pos()),
             (None, Some((b0, b1))) => (point.crv_pos(), (b0 + b1) / 2.0),
             (None, None) => return Err(SolidError::sm_err(OP)),
         };
