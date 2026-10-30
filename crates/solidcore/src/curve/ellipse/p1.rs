@@ -2435,7 +2435,13 @@ mod tests {
             assert!((start - Point3::new(3.0, 2.0, 3.0)).length() < 1e-12);
             assert!((finish - Point3::new(-1.0, 2.0, 3.0)).length() < 1e-12);
             c.edit_parameterization(&k, &past, true, None).unwrap();
-            assert!(c.base.gw_nurb().unwrap().knots().iter().all(|v| v.is_finite()));
+            assert!(c
+                .base
+                .gw_nurb()
+                .unwrap()
+                .knots()
+                .iter()
+                .all(|v| v.is_finite()));
         }
     }
 
