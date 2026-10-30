@@ -670,6 +670,9 @@ fn ieee_remainder(x: f64, y: f64) -> f64 {
         n -= 1.0;
         r = x - n * y;
     }
+    if r == 0.0 {
+        return 0.0_f64.copysign(x);
+    }
     r
 }
 
@@ -740,15 +743,15 @@ mod tests {
         assert!(extended_curve(&k, &old, false, 0.5).is_none());
     }
 
-    /// The quarter circle of radius 2 about (1, 1, 0) in the XY plane, from 0 to 90
-    /// degrees (`inside_out`: its NURB runs from 90 to 0 degrees).
-    fn quarter_circle(k: &Kernel, inside_out: bool) -> Curve {
+    /// The quarter circle of radius 2 about (1, 1, 0) in the XY plane, from `from` to
+    /// `from + 90` degrees (`inside_out`: its NURB runs the other way).
+    fn quarter_circle(k: &Kernel, from: f64, inside_out: bool) -> Curve {
         let e = crate::curve::ellipse::Ellipse::new_circle(
             k,
             Point3::new(1.0, 1.0, 0.0),
             Vec3::X,
             Vec3::Y,
-            Extent1d::from_min_max(0.0, 90.0),
+            Extent1d::from_min_max(from, from + 90.0),
             2.0,
             &crate::curve::ellipse::EllipseOptions {
                 inside_out,
@@ -768,14 +771,15 @@ mod tests {
         for inside_out in [false, true] {
             for at_end in [true, false] {
                 let mut k = Kernel::default();
-                let old = quarter_circle(&k, inside_out);
+                let old = quarter_circle(&k, 10.0, inside_out);
                 let nat = old.natural_interval();
                 let h = 0.01 * nat.length();
                 let new_end = if at_end { nat.max() + h } else { nat.min() - h };
                 assert!(extended_curve(&k, &old, at_end, new_end).is_none());
 
                 k.fixes.imprint_extension_keeps_analytic_curve = true;
-                let new = extended_curve(&k, &old, at_end, new_end).unwrap();
+                let new = extended_curve(&k, &old, at_end, new_end)
+                    .unwrap_or_else(|| panic!("inside_out {inside_out} at_end {at_end}"));
                 let CurveKind::Ellipse(e) = new.kind() else {
                     panic!("not a circle: {}", new.class_string());
                 };
@@ -786,11 +790,11 @@ mod tests {
                 // The NURB end continued is the angular max unless the circle runs
                 // inside out.
                 if at_end != inside_out {
-                    assert_eq!(dom.min(), 0.0);
-                    assert!(dom.max() > 90.0, "{dom:?}");
+                    assert_eq!(dom.min(), 10.0);
+                    assert!(dom.max() > 100.0, "{dom:?}");
                 } else {
-                    assert!(dom.min() < 0.0, "{dom:?}");
-                    assert_eq!(dom.max(), 90.0);
+                    assert!(dom.min() < 10.0, "{dom:?}");
+                    assert_eq!(dom.max(), 100.0);
                 }
                 let new_nat = new.natural_interval();
                 assert!(are_same(
@@ -814,6 +818,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// WR-601: a circle from 0 degrees continued back past 0 would leave its maximum
+    /// analytic domain `[0, 360]`, so it is not continued, as in the fork.
+    #[test]
+    fn wr601_circle_not_continued_out_of_its_analytic_domain() {
+        let mut k = Kernel::default();
+        k.fixes.imprint_extension_keeps_analytic_curve = true;
+        let old = quarter_circle(&k, 0.0, false);
+        let nat = old.natural_interval();
+        assert!(extended_curve(&k, &old, false, nat.min() - 0.01 * nat.length()).is_none());
+        assert!(extended_curve(&k, &old, true, nat.max() + 0.01 * nat.length()).is_some());
     }
 
     /// WR-601: a continued ellipse stays an ellipse of the same radii.
