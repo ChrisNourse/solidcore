@@ -522,19 +522,18 @@ fn extended_curve(k: &Kernel, curve: &Curve, at_end: bool, new_end: f64) -> Opti
         *knots.first_mut()? = new_end;
     }
 
-    let extended =
-        crate::nurbs::b_spline_curve::p1::BSplineCurve::create_canonical(&CanonicalData {
-            dim: bs.dim(),
-            degree,
-            control_points: &pts,
-            form: BSplineCurveForm::Unspecified,
-            knot_multiplicities: &mults,
-            knots: &knots,
-            knot_type: KnotType::Unspecified,
-            weights: rational.then_some(weights.as_slice()),
-            trim: None,
-        })
-        .ok()?;
+    let extended = BSplineCurve::create_canonical(&CanonicalData {
+        dim: bs.dim(),
+        degree,
+        control_points: &pts,
+        form: BSplineCurveForm::Unspecified,
+        knot_multiplicities: &mults,
+        knots: &knots,
+        knot_type: KnotType::Unspecified,
+        weights: rational.then_some(weights.as_slice()),
+        trim: None,
+    })
+    .ok()?;
     // An analytic curve (a line, circle or ellipse) continued is that curve still: the
     // same kind over the continued NURB, not a plain B-spline in its place (bec8a0b).
     if !matches!(curve.kind(), CurveKind::BSpline(_)) {
@@ -691,7 +690,7 @@ mod tests {
             Point3::new(4.5, 0.5, -1.0),
             Point3::new(5.0, 2.0, 0.0),
         ];
-        let c = crate::nurbs::b_spline_curve::p1::BSplineCurve::create_canonical(&CanonicalData {
+        let c = BSplineCurve::create_canonical(&CanonicalData {
             dim: 3,
             degree: 3,
             control_points: &pts,
@@ -789,12 +788,12 @@ mod tests {
                 let dom = e.step_interval();
                 // The NURB end continued is the angular max unless the circle runs
                 // inside out.
-                if at_end != inside_out {
-                    assert_eq!(dom.min(), 10.0);
-                    assert!(dom.max() > 100.0, "{dom:?}");
-                } else {
+                if at_end == inside_out {
                     assert!(dom.min() < 10.0, "{dom:?}");
                     assert_eq!(dom.max(), 100.0);
+                } else {
+                    assert_eq!(dom.min(), 10.0);
+                    assert!(dom.max() > 100.0, "{dom:?}");
                 }
                 let new_nat = new.natural_interval();
                 assert!(are_same(
