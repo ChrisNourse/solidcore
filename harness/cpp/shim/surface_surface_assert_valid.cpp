@@ -331,10 +331,7 @@ SC_EXPORT int32_t sc_surface_surface_assert_valid_eval(const double* input, int6
             segments.Add(segment);
             SmCompositeCurve* boundary = new (ctx) SmCompositeCurve((ULONG)dim, segments, FALSE);
             if (boundary_input.bad_owner)
-            {
-                boundary->SetOwner(basis);
                 invalid_boundary_owner = true;
-            }
             if (i < n3d)
                 curves3d.Add(boundary);
             else
@@ -348,6 +345,16 @@ SC_EXPORT int32_t sc_surface_surface_assert_valid_eval(const double* input, int6
         }
         // The fixture represents one kernel context, including every owned object.
         surface->SetContext(&ctx);
+        // Install corruption after SetContext, so context propagation cannot
+        // accidentally repair the bad-owner input before the check.
+        for (int64_t i = 0; i < n3d + nuv; ++i)
+        {
+            if (boundaries[(size_t)i].bad_owner)
+            {
+                SmCurve* boundary = i < n3d ? curves3d[(ULONG)i] : curvesuv[(ULONG)(i - n3d)];
+                boundary->SetOwner(basis);
+            }
+        }
         // The pinned SM_GetAssertLabelList omits CurveBoundedSurface. Failed
         // boundary reports 1/2 therefore read past its one-entry default table.
         // A composite inherits Curve::AssertValid, whose bad-owner test runs at
