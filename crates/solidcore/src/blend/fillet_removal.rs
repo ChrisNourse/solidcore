@@ -162,6 +162,7 @@ impl FilletCornerInfo {
 /// made before the B-rep changes, except that a side edge's UV trim curve that does not
 /// reach its new corner is extended (or cleared) on the way, as upstream does.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // upstream's independent SmBoolean members
 pub struct FilletRemoval {
     /// `m_pFaceToDelete`.
     face_to_delete: FaceId,
