@@ -1,7 +1,7 @@
 # General: opt-in flat corners and perspective bounds (2026-10-26, PR #684)
 
 Units: `surface.surface_p7`, `geom.global_solver`, `curve.curve_p9`;
-WR-55 / WR-384 (flat corners), WR-589 (perspective bounds); #525.
+WR-55 / WR-384 (flat corners), WR-608 (perspective bounds); #525.
 
 Main already fixes flat-corner point requests behind default-off
 `Kernel::fixes.flat_corners_test_bits`. This PR retains that algorithm and adds
@@ -41,5 +41,7 @@ Earlier native runs confirmed the reference defects on these exact inputs:
 
 No new known mismatch or status downgrade is needed: ordinary differential runners
 use default fixes. No comparison is dropped or tolerance widened. The new issue
-record uses WR-589: the former WR-260, the review's proposed WR-445 and the
-previous WR-454 were occupied on main at the 2026-10-30 update.
+record uses WR-608: WR-260, WR-445 and WR-454 were taken on main, and the
+intermediate WR-589 collides with open PR #1828. WR-608 is the next number after
+the highest actual record on main and across all open PR files checked on
+2026-10-31 (including the reserved WR-604 maintainer follow-up).

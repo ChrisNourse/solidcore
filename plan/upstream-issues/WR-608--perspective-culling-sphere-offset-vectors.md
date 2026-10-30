@@ -1,4 +1,4 @@
-#### WR-589. Perspective culling uses the wrong sphere and treats points as vectors
+#### WR-608. Perspective culling uses the wrong sphere and treats points as vectors
 - **Severity:** Wrong result
 - **Area:** Spatial structures and small geometry
 - **Location:** `source/SMLib/src/SmGlobalSolver.cpp:541–565`;
@@ -14,4 +14,4 @@
   `gen0207`; caller `curve.curve_p9/gen0415`; details in [findings #525](../findings/general--525-flat-corners-perspective-bounds.md), PR #684).
 - **Rust port:** opt in with `Kernel::fixes.perspective_sphere_offsets` to use each sphere's own radius and center and project offset vectors. The default remains pinned C++ behavior.
 
-WR-260, the review-suggested WR-445 and the previous WR-454 are occupied on main. This PR uses WR-589, the next number after the highest record on main `901089a23`, checked on 2026-10-30. Existing records and their references are preserved.
+WR-260, WR-445 and WR-454 are occupied on main, and the intermediate WR-589 is held by open PR #1828. WR-608 is the next number after the highest actual record on main and across the complete open-PR file inventory checked on 2026-10-31, including the reserved WR-604 follow-up for #674. Existing records and their references are preserved.
