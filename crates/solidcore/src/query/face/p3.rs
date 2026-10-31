@@ -11,7 +11,7 @@
 //! | Rust                                          | Upstream                                    |
 //! |-----------------------------------------------|---------------------------------------------|
 //! | [`calculate_tight_bounding_box`], [`calculate_tight_bounding_box_into`] | `SmFace::CalculateTightBoundingBox` |
-//! | `face_directed_max` (opt-in, WR-588), `cell_directed_max`, `cell_monotone`, `cell_division` (WR-645) | `sm_FaceDirectedMax`, `sm_CellDirectedMax`, `sm_CellMonotone` (the fork tangency-labs/smlib@9d44c1b), `sm_CellDivision` (tangency-labs/smlib@326de73) |
+//! | `face_directed_max` (opt-in, WR-588), `cell_directed_max`, `cell_monotone`, `cell_division` (WR-651) | `sm_FaceDirectedMax`, `sm_CellDirectedMax`, `sm_CellMonotone` (the fork tangency-labs/smlib@9d44c1b), `sm_CellDivision` (tangency-labs/smlib@326de73) |
 //! | [`face_classify_uv_line`]                     | `sm_FaceClassifyUVLine` (file static)       |
 //! | [`face_classify_uv_line_mut`]                 | `sm_FaceClassifyUVLine` (in place)          |
 //! | [`find_and_classify_loop_bisector`], [`LoopBisector`] | `sms_FindAndClassifyLoopBisector`   |
@@ -596,7 +596,7 @@ const FACE_EXTREME_MAX_DEPTH: u32 = 16;
 /// this distance, so a part nearer than that is no cell of its own.
 const FACE_EXTREME_KNOT_SNAP: f64 = 1.0e-08;
 
-/// Where a cell of `[lo, hi]` is divided along one way (`sm_CellDivision`, WR-645,
+/// Where a cell of `[lo, hi]` is divided along one way (`sm_CellDivision`, WR-651,
 /// tangency-labs/smlib@326de73): at the knot strictly inside it (by more than
 /// [`FACE_EXTREME_KNOT_SNAP`]) nearest its middle, the first such in `knots` on a tie,
 /// else at its middle. Divided at knots, a cell comes to lie within one knot span that
@@ -877,7 +877,7 @@ fn cell_monotone(k: &Kernel, surface: &Surface, cell: &Extent2d, dir: Vec3) -> R
 ///    cells hold;
 ///
 /// otherwise the cell is divided each way ([`cell_division`]: at a knot inside it, else at
-/// its middle; WR-645). A cell left at [`FACE_EXTREME_MAX_DEPTH`] or past
+/// its middle; WR-651). A cell left at [`FACE_EXTREME_MAX_DEPTH`] or past
 /// [`FACE_EXTREME_MAX_CELLS`] counts with its greatest value. The cells are an explicit
 /// stack (no recursion), taken last first, as the fork's.
 fn face_directed_max(
@@ -936,7 +936,7 @@ fn face_directed_max(
             continue;
         }
         let (u0, v0, u1, v1) = (cell.min().x, cell.min().y, cell.max().x, cell.max().y);
-        // WR-645 (tangency-labs/smlib@326de73): divided at a knot inside the cell, else at
+        // WR-651 (tangency-labs/smlib@326de73): divided at a knot inside the cell, else at
         // its middle (`sm_CellDivision`).
         let at = Point2::new(
             cell_division(&knots_u, u0, u1),

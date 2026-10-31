@@ -1,4 +1,4 @@
-//! WR-645 (tangency-labs/smlib@326de73), the second half of #1799's trimmed-face tight box
+//! WR-651 (tangency-labs/smlib@326de73), the second half of #1799's trimmed-face tight box
 //! (`Kernel::fixes.face_tight_box_searches_trim`, WR-588): the search divides an undecided
 //! cell at the surface's knot inside it, not only at its middle.
 //!

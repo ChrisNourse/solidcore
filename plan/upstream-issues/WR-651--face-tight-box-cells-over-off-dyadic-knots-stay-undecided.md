@@ -1,4 +1,4 @@
-#### WR-645. The trimmed-face tight box search (WR-588) leaves cells over a knot off the domain's dyadic points undecided, so the box overshoots
+#### WR-651. The trimmed-face tight box search (WR-588) leaves cells over a knot off the domain's dyadic points undecided, so the box overshoots
 - **Severity:** Wrong result (a trimmed face's tight box is too large; opt-in path only)
 - **Area:** Faces / tight bounding box
 - **Location:** `source/SMLib/src/SmFace.cpp`, `sm_FaceDirectedMax` (the SolidCraft fork's, tangency-labs/smlib@beb6061, ported for WR-588): an undecided cell is halved at its middle. Not in upstream SMLib, which has no such search; this completes WR-588's fix.
