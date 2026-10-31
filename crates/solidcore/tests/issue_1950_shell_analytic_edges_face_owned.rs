@@ -2,10 +2,11 @@
 //! `shell_edges_on_analytics_exact` (the fork's tangency-labs/smlib@cd85d34) on
 //! face-owned surfaces. `MakeEdgesOnAnalyticsExact`
 //! intersects the surfaces of the two faces of each marched edge. Upstream those are the
-//! faces' own surfaces, whose caches resolve through their faces; the port intersected
-//! them without the B-rep's face services and stopped on `Unported` (a trimmed cache of a
-//! face-owned surface, `TrimSrfCache::build_tree_with_face`, with SolidCraft's fixes; the
-//! face handle of a surface's cache with the defaults). SolidCraft's plate: the profile
+//! faces' own surfaces, whose caches resolve through their faces. Before #1963 (tdamsma)
+//! the port intersected them without the B-rep's face services and stopped on `Unported`
+//! (a trimmed cache of a face-owned surface, `TrimSrfCache::build_tree_with_face`, with
+//! SolidCraft's fixes; the face handle of a surface's cache with the defaults). #1963
+//! tests shell/566 and shell/1525; this is the third case of #1950. SolidCraft's plate: the profile
 //! (0, 0)-(42.5, 0)-(42.5, 20)-(0, 20) closed by a half circle r 10 on the x < 0 side,
 //! extruded 27.5, less a blind hole r 5 along x through the arc side, shelled 2 inward
 //! open at x = 42.5. SolidCraft's rig gives V 10400.2131 without the flag; with it the
