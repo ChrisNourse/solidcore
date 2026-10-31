@@ -13,6 +13,10 @@
 //! Opt-in `Kernel::fixes.taper_pivot_nearest_corner` (WR-402): when the two links of a
 //! corner meet at both ends (a two-curve loop), the pivot is the joint nearest the
 //! corner's offset curve, not `sm_FindPivotPoint`'s first coincident pair.
+//!
+//! With `primitive_path_curve_statuses` (#483), pivot endpoint failures propagate
+//! through both pivot policies instead of using undefined points.
+//!
 
 use crate::curve::composite_curve::OffsetMapAttribute;
 use crate::curve::curve::Curve;

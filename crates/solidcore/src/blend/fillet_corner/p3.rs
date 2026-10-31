@@ -89,6 +89,10 @@
 //!   (next edge use = radial of the clockwise neighbour) is a permutation of the edge
 //!   uses, so it returns to its start; it is bounded by the B-rep's edge use count (an
 //!   error past it, which only corrupt topology reaches). There is no recursion.
+//!
+//! With `fillet_corner_statuses` (#483), the Nx1 selector returns failed binormal
+//! statuses instead of reading a nonzero error status as a successful degeneracy test.
+//!
 
 use std::collections::BTreeMap;
 

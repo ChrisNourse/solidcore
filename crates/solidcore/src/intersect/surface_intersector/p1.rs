@@ -86,6 +86,10 @@
 //!   are ignored, except `Unported`, which always propagates.
 //! - **Not ported here.** `SmTsectPnt::Dump` / `Draw` (debug output) and the
 //!   `SM_DEBUG_CODE` blocks (graphics and jump statistics).
+//!
+//! The `ssi_alignment_statuses` policy (#483) is captured from the constructing
+//! kernel for later advanced singularity alignment, whose method has no kernel argument.
+//!
 
 use crate::blend::fillet_standard_solver::p1::FilletLaw;
 use crate::curve::curve::p3::PointSolveOptions;

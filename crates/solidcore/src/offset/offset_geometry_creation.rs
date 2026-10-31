@@ -142,6 +142,11 @@
 //!   for each edge: the face caches are not kept from one edge to the next, where
 //!   upstream's stay on the surfaces between curve replacements.
 //! - **Recursion.** None.
+//!
+//! With `offset_tangent_gap_statuses` (#483), `HaveTangentGaps` returns failed
+//! evaluations and closest-point statuses before consuming their outputs; a successful
+//! query without a solution retains its existing meaning.
+//!
 
 use crate::blend::fillet_standard_solver::p1::CircularCrossSectionFsg;
 use crate::curve::curve::p1::GlobalPointSolveOptions;

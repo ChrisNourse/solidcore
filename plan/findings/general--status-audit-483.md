@@ -50,8 +50,8 @@ propagation was audited and retained. Test names below are searchable in source.
 | same: `CreateCurveSweep`, both `RemoveFaces` | reject failed sweep before cap removal; reject first failed removal before next stage | same flag; `audit_483_planar_failures_release_owned_bodies_and_stop` |
 | mitre and closing-join `CCWAngleBetween` | check before reusing angle accumulator | same flag |
 | mitre and closing-join `CreateLineSegment`, every `CreateExtendedCurve` | `line_into` / `extend_into`: error before old output slot can be consumed | same flag; line dimension is fixed 3, ordinary line construction is otherwise infallible |
-| curved-join `BrepIntersect` | intentional recovery: discard failed search; use independently constructed temporary cutting line | unchanged optional search; it never reads failed intersection output |
-| curved-join `GlobalCurveSolve` | intentional recovery: skip failed candidate search; successful candidates or independent cutting line remain available | unchanged optional search; no failed solution array is consumed |
+| curved-join `BrepIntersect` | intentional recovery: discard failed search; use independently constructed temporary cutting line | `audit_483_optional_mitre_search_uses_independent_cutting_line`; no failed intersection output is read; internal port errors still propagate in checked mode |
+| curved-join `GlobalCurveSolve` | intentional recovery: skip failed candidate search; successful candidates or independent cutting line remain available | unchanged optional search; no failed solution array is consumed; internal port errors still propagate in checked mode |
 | accepted solution `GetAt`, both `Param` and point `Evaluate` calls | `GetAt` already `?`; checked parameters/evaluations propagate before distance ranking | sweep flag; failed accepted values cannot become UNDEF candidates |
 | both `ProjectAndTrim` calls | `trim_both`: return first failure before trimming next operand | sweep flag; `audit_483_planar_trim_stops_before_second_operand_after_failure` |
 | closed single-piece `StitchFaces`, split `ProjectAndTrim`, `RemoveFaces`, topological removal | mandatory statuses checked; topology queries already `?` | sweep flag |
@@ -86,5 +86,30 @@ failed UV projection retains the seeded `(4,5)` and leaves the corner unfinished
 a failed tangent-gap evaluation never calls ClosestPoint; a zero previous SSI
 direction returns its angle error instead of a successful zero-angle alignment.
 
-Validation results are recorded in PR #1775 after the complete current-head runs.
+## Validation
+
+Implementation revision: `d54dfd46219b2aa441ba6355894bce22855846ac`, including merge
+of main `1fcfee382a96fe7c4c7f45768867df3406ccf69b`. The subsequent evidence/header
+commit changes documentation only (module comments, records and unit notes).
+
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- The same clippy gate with `--features cpp`: passed.
+- `cargo check -p solidcore --target wasm32-unknown-unknown`: passed.
+- `cargo test -p solidcore --profile difftest`: 3358 passed, 0 failed, 22 ignored.
+- `cargo test -p difftest --features cpp --profile difftest`: 787 passed, 0 failed,
+  37 ignored.
+- Unfiltered `--green --jobs 8 --baseline bin/483-exact-base/reports`: 280 units,
+  280 green, 0 partial, 0 failed; 591113 cases, 590398 pass, 0 failed/deferred,
+  697 existing guard rejections and 18 existing parked C++ defects. No vacuous pass.
+- Baseline: exact-base trusted push/main CI run `41178204113`, artifact
+  `13034146295`, SHA-256
+  `0a095d80ccf40ec5757487a39de02d21cd80b80dc0ad97dd7761b7be2fb4866b`.
+  The repository, revision, workflow, digest and complete unit set were validated
+  by `scripts/ci/difftest_baseline.py`; the native run passed its coverage ratchet.
+- `--perturb --jobs 4` on all 15 touched/reviewed units and necessary callers:
+  13887 perturbed cases, 13887 detected, 0 missed, 0 failed units.
+
+The C++ key remains `v1-3fd5b9548d19-726643fb17a52b7d`; no reference rebuild,
+tolerance change, new rejection, new parked case or coverage waiver was needed.
 Historical reports under `bin/issue-1781-*` are not reused as current-head evidence.
