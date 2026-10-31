@@ -1545,7 +1545,7 @@ impl<'s, 't, O: SolutionObject + 't, G: Clone> FilletIntersector<'s, 't, O, G> {
                     si.uv_domains[1].clamp_point(part.uv_pos(SrfIndex::Second)),
                 )?;
                 for (rail, contact) in rails.into_iter().zip([contact0, contact1]) {
-                    let rail_curve = Curve::from(rail.clone());
+                    let rail_curve = Curve::from(*rail);
                     let (on, sol) = rail_curve.local_point_solve::<()>(
                         k,
                         &rail_curve.natural_interval(),
