@@ -645,6 +645,130 @@
      }
     ]
    }
+  },
+  {
+   "name": "extended_surface_7_LShape_I_feat_rb0",
+   "upstream_ref": "source/SMLib/src/SmFeatureExecutive.cpp SmFeatureExecutive; tests/prog_test/src/smFeatureTest.cpp my_test_extended_surface case 7 (feature rebuild type 0)",
+   "inputs": {
+    "file": "Defeature/LShape_I.smb",
+    "features": [
+     {
+      "kind": "edges",
+      "face": 3,
+      "edges": [
+       1,
+       2,
+       8,
+       13,
+       21,
+       30,
+       31,
+       32,
+       37,
+       59
+      ],
+      "feat_rb": 0
+     }
+    ],
+    "ops": [
+     {
+      "op": "defeature"
+     }
+    ]
+   }
+  },
+  {
+   "name": "extended_surface_7_LShape_I_feat_rb2",
+   "upstream_ref": "source/SMLib/src/SmFeatureExecutive.cpp SmFeatureExecutive; tests/prog_test/src/smFeatureTest.cpp my_test_extended_surface case 7 (feature rebuild type 2)",
+   "inputs": {
+    "file": "Defeature/LShape_I.smb",
+    "features": [
+     {
+      "kind": "edges",
+      "face": 3,
+      "edges": [
+       1,
+       2,
+       8,
+       13,
+       21,
+       30,
+       31,
+       32,
+       37,
+       59
+      ],
+      "feat_rb": 2
+     }
+    ],
+    "ops": [
+     {
+      "op": "defeature"
+     }
+    ]
+   }
+  },
+  {
+   "name": "extended_surface_9_Platte_feat_rb0",
+   "upstream_ref": "source/SMLib/src/SmFeatureExecutive.cpp SmFeatureExecutive; tests/prog_test/src/smFeatureTest.cpp my_test_extended_surface case 9 (feature rebuild type 0)",
+   "inputs": {
+    "file": "Defeature/Platte.smb",
+    "features": [
+     {
+      "kind": "edges",
+      "face": 80,
+      "edges": [
+       57,
+       58,
+       123,
+       124,
+       125,
+       126,
+       216,
+       217,
+       218,
+       219
+      ],
+      "feat_rb": 0
+     }
+    ],
+    "ops": [
+     {
+      "op": "defeature"
+     }
+    ]
+   }
+  },
+  {
+   "name": "extended_surface_9_Platte_feat_rb2",
+   "upstream_ref": "source/SMLib/src/SmFeatureExecutive.cpp SmFeatureExecutive; tests/prog_test/src/smFeatureTest.cpp my_test_extended_surface case 9 (feature rebuild type 2)",
+   "inputs": {
+    "file": "Defeature/Platte.smb",
+    "features": [
+     {
+      "kind": "edges",
+      "face": 80,
+      "edges": [
+       57,
+       58,
+       123,
+       124,
+       125,
+       126,
+       216,
+       217,
+       218,
+       219
+      ],
+      "feat_rb": 2
+     }
+    ],
+    "ops": [
+     {
+      "op": "defeature"
+     }
+    ]
+   }
   }
  ]
 }

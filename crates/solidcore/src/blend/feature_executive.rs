@@ -67,11 +67,18 @@
 //!   virtual `operator==`).
 //! - **`RestoreFeatures`.** Upstream removes `m_sFeatures[ii]` while iterating a copy by
 //!   the same index, so after the first restored feature it drops the wrong entry and
-//!   keeps a deleted feature in its list (use after free). The port removes each
+//!   keeps a deleted feature in its list (use after free; upstream issue
+//!   `restorefeatures-removes-wrong-entry-keeps-deleted-feature`). The port removes each
 //!   restored feature itself; for at most one restored feature (the only case without
 //!   undefined behaviour upstream) the two agree.
-//! - **Notifications.** Each B-rep edit notifies through the kernel's callbacks
-//!   (`with_kernel_callbacks`), as upstream's objects notify their context.
+//! - **`ValidatePatch`'s intersection test.** Upstream compares
+//!   `sPtClass.GetClassType()` (the static class id) with `SM_PC_FACE`, so the test never
+//!   rejects a patch (WR-new, `plan/upstream-issues/`); the port keeps that: it runs the
+//!   face intersections (their status and edits count) and the classifications, and
+//!   accepts.
+//! - **Notifications.** B-rep edits run on arena-only notification records
+//!   ([`crate::topology::brep::p2::ArenaNotifyState`]; a copy's records cover both
+//!   B-reps), as upstream's objects notify their context; attributes are not carried.
 //! - No recursion.
 
 use crate::boolean::merge::p3::BooleanDriver;
@@ -88,7 +95,6 @@ use crate::intersect::point_class::{PointClassType, PointClassification};
 use crate::kernel::Kernel;
 use crate::math::Point3;
 use crate::topology::brep::p1 as bp1;
-use crate::topology::brep::p3::with_kernel_callbacks;
 use crate::topology::face::p3::{FaceBreps, FaceIntersectOptions, IntersectObjects};
 use crate::topology::topology_traverser::{self as traverser, Entity, Marks};
 use crate::topology::{edge, vertex, Brep, EdgeId, FaceId, LoopId, VertexId};
@@ -865,8 +871,8 @@ fn build_patches(
         let fbrep = feature.fbrep.as_mut().ok_or_else(sm_err)?;
         let curves = edge_curves(fbrep, &edges)?;
         let pid = base_patch.ok_or_else(|| SolidError::null_pointer(OP))?;
-        let patch = take_patch(patches, pid)?;
-        let r = validate_patch(k, fbrep, &patch, &curves);
+        let mut patch = take_patch(patches, pid)?;
+        let r = validate_patch(k, fbrep, &mut patch, &curves);
         put_patch(patches, pid, patch)?;
         match r {
             Ok(()) => {
@@ -1037,10 +1043,11 @@ fn build_patch(
         let tol = tol::brep_zone_tol_3d(k, side_brep(base, feature, target)?, SmallTopoType::default());
         let mut patch = new_brep(k)?;
         crate::topology::brep::p2::set_tolerance(k, &mut patch, tol, true, true)?;
+        let save_patch = patch.editing_enabled();
         patch.set_editing_enabled(true);
         let src = side_brep_mut(base, feature, source)?;
         let r = rebuild_brep(k, &mut patch, &edges, rebuild_type, ext_dist, src);
-        patch.set_editing_enabled(false);
+        patch.set_editing_enabled(save_patch);
         // SER_MSG(.., "Could not build patch for void"): the patch is deleted
         r?;
         add_patch(patches, patch)
@@ -1049,9 +1056,9 @@ fn build_patch(
     // Check that the patch successfully fills the void
     let stat = {
         let curves = edge_curves(side_brep(base, feature, source)?, &edges)?;
-        let patch = take_patch(patches, pid)?;
+        let mut patch = take_patch(patches, pid)?;
         let tgt = side_brep_mut(base, feature, target)?;
-        let r = validate_patch(k, tgt, &patch, &curves);
+        let r = validate_patch(k, tgt, &mut patch, &curves);
         put_patch(patches, pid, patch)?;
         r
     };
@@ -1200,7 +1207,7 @@ fn join_patches(
     // Check that the patch successfully fills the void, save if good result
     let stat = {
         let tgt = side_brep_mut(base, feature, target)?;
-        validate_patch(k, tgt, &patch, &curves)
+        validate_patch(k, tgt, &mut patch, &curves)
     };
     keep_unported(stat.clone())?;
     if stat.is_ok() {
@@ -1257,7 +1264,7 @@ fn on_loop_curve(k: &Kernel, b: &Brep, e: EdgeId, curves: &[LoopCurve], tol: f64
 fn validate_patch(
     k: &mut Kernel,
     target: &mut Brep,
-    patch: &Brep,
+    patch: &mut Brep,
     loop_curves: &[LoopCurve],
 ) -> Result<()> {
     let patch_faces = bp1::faces(patch, None)?;
@@ -1297,9 +1304,8 @@ fn validate_patch(
     }
 
     // Quality test 2: Check that the patch isn't intersecting pBrep internally
-    let mut patch_copy = patch.clone();
     for &pf in &patch_faces {
-        let patch_box = face_box(k, &patch_copy, pf);
+        let patch_box = face_box(k, patch, pf);
         for (jj, &f) in faces.iter().enumerate() {
             // Quick check via bounding boxes
             let face_bbox = boxes.get(jj).copied().unwrap_or_else(Extent3d::new);
@@ -1315,7 +1321,7 @@ fn validate_patch(
             let approx = tol::approx_tol3d(k, tol);
             let out = crate::topology::face::p3::face_intersect_breps(
                 k,
-                FaceBreps::Two(&mut patch_copy, target),
+                FaceBreps::Two(patch, target),
                 pf,
                 f,
                 approx,
@@ -1325,7 +1331,7 @@ fn validate_patch(
             let cc_curves = out.cc_curves_3d.unwrap_or_default();
             let uv1 = out.cc_this_uv_curves.unwrap_or_default();
             let geometry = IntersectObjects {
-                b: &patch_copy,
+                b: patch,
                 other: target,
                 side: false,
                 curves_3d: &cc_curves,
@@ -1336,11 +1342,15 @@ fn validate_patch(
             for cc in out.this_classes.unwrap_or_default() {
                 let curve = cc_curve(&geometry, &cc)?;
                 let param = curve.natural_interval().mid();
-                let pt_class = cc.find_point_class(k, &geometry, param, tol)?;
-                // If the curve is internal to the face, then the new face is a bad result
-                if pt_class.point_class() == PointClassType::Face {
-                    return Err(assert_failure("The patch intersects the existing Brep"));
+                // FindPointClass (status ignored)
+                match cc.find_point_class(k, &geometry, param, tol) {
+                    Err(e) if e.is_unported() => return Err(e),
+                    _ => {}
                 }
+                // If the curve is internal to the face, then the new face is a bad result:
+                // AERN_MSG(sPtClass.GetClassType() != SM_PC_FACE, ..). GetClassType() is the
+                // static SM_COMMON class id (SmPointClassification_TYPE), not the point
+                // class, so the test never fails upstream (WR record in the module docs).
             }
         }
     }
@@ -1543,7 +1553,7 @@ fn ext_surface_rebuild(
     }
 
     if test_merge_at_end {
-        let taken = std::mem::replace(patch, new_brep(k)?);
+        let taken = std::mem::replace(patch, Brep::new());
         let (merged, _temp, stat) = piecewise_merge(k, taken, temp_patch, tol)?;
         *patch = merged;
         keep_unported(stat)?;
@@ -1768,9 +1778,8 @@ pub fn edge_number_in_brep(b: &Brep, e: EdgeId) -> Result<usize> {
 
 /// `SmEdge::GetVertices(pV1, pV2)`.
 fn edge_vertices(b: &Brep, e: EdgeId) -> Result<(VertexId, VertexId)> {
-    let vs = edge::vertices(b, e, None)?;
-    match vs.as_slice() {
-        [Some(a), Some(b)] => Ok((*a, *b)),
+    match edge::start_end_vertices(b, e)? {
+        (Some(a), Some(z)) => Ok((a, z)),
         _ => Err(SolidError::null_pointer(OP)),
     }
 }
@@ -1865,11 +1874,12 @@ fn copy_faces(
     dest: &mut Brep,
     use_merge: bool,
 ) -> Result<(Vec<FaceId>, bool)> {
-    with_kernel_callbacks(k, dest, |k, dest, env| {
-        let key_of = env.key_of;
-        let face_ref = |f: FaceId| key_of(EntityRef::Face(f));
-        crate::topology::brep::p7::copy_faces(k, src, faces, dest, use_merge, &face_ref, env)
-    })
+    // (arena-only notification records for both B-reps' objects, as `copy_component`)
+    let mut state = crate::topology::brep::p2::ArenaNotifyState::new(dest);
+    state.seed(src);
+    let mut env = state.env(None);
+    let face_ref = |f: FaceId| crate::topology::loopuse::notify_ref(EntityRef::Face(f));
+    crate::topology::brep::p7::copy_faces(k, src, faces, dest, use_merge, &face_ref, &mut env)
 }
 
 /// `SmBrep::RemoveFaces`.
@@ -1954,4 +1964,91 @@ fn manifold_xor(k: &mut Kernel, a: Brep, b: Brep) -> Result<Brep> {
     let mut result = result;
     result.refresh_cached_topology();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitive::api_primitives::{create_box, create_cylinder};
+
+    fn shares_vertex(b: &Brep, a: EdgeId, z: EdgeId) -> bool {
+        let (a0, a1) = edge_vertices(b, a).unwrap();
+        let (z0, z1) = edge_vertices(b, z).unwrap();
+        a0 == z0 || a0 == z1 || a1 == z0 || a1 == z1
+    }
+
+    #[test]
+    fn fix_edge_chain_list_orders_a_shuffled_face_loop() {
+        let mut k = Kernel::default();
+        let b = create_box(&mut k, Point3::ZERO, 1.0, 2.0, 3.0).unwrap();
+        let face = *bp1::faces(&b, None).unwrap().first().unwrap();
+        let mut edges = face_edges(&b, face, false).unwrap();
+        assert_eq!(edges.len(), 4);
+        edges.swap(1, 2);
+        let mut starts = Vec::new();
+        fix_edge_chain_list(&b, &mut edges, &mut starts).unwrap();
+        assert_eq!(edges.len(), 4);
+        assert_eq!(starts, vec![0]);
+        for w in edges.windows(2) {
+            assert!(shares_vertex(&b, w[0], w[1]));
+        }
+    }
+
+    /// A closed edge (one vertex at both ends) is a chain of its own; `GetVertices` must
+    /// give both end vertices, not the unique list (which made one chain of every edge).
+    #[test]
+    fn fix_edge_chain_list_closed_edges_are_separate_chains() {
+        let mut k = Kernel::default();
+        let b = create_cylinder(&mut k, Point3::ZERO, 1.0, 2.0).unwrap();
+        let closed: Vec<EdgeId> = bp1::edges(&b, None)
+            .unwrap()
+            .into_iter()
+            .filter(|&e| {
+                let (s, t) = edge_vertices(&b, e).unwrap();
+                s == t
+            })
+            .collect();
+        assert_eq!(closed.len(), 2);
+        let mut edges = closed.clone();
+        let mut starts = Vec::new();
+        fix_edge_chain_list(&b, &mut edges, &mut starts).unwrap();
+        assert_eq!(edges, closed);
+        assert_eq!(starts, vec![0, 1]);
+    }
+
+    #[test]
+    fn fix_edge_chain_list_empty() {
+        let mut k = Kernel::default();
+        let b = create_box(&mut k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
+        let mut edges = Vec::new();
+        let mut starts = vec![3];
+        fix_edge_chain_list(&b, &mut edges, &mut starts).unwrap();
+        assert!(starts.is_empty());
+    }
+
+    #[test]
+    fn edge_number_in_brep_is_the_get_edges_index() {
+        let mut k = Kernel::default();
+        let b = create_box(&mut k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
+        for (i, e) in bp1::edges(&b, None).unwrap().into_iter().enumerate() {
+            assert_eq!(edge_number_in_brep(&b, e).unwrap(), i);
+        }
+    }
+
+    #[test]
+    fn add_feature_without_faces_makes_none() {
+        let mut k = Kernel::default();
+        let mut b = create_box(&mut k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
+        let mut ex = FeatureExecutive::new(&mut k, &mut b).unwrap();
+        let made = ex
+            .add_feature(
+                &mut k,
+                &[],
+                RebuildBrepType::ExtendSurface,
+                RebuildBrepType::FromOtherBrep,
+            )
+            .unwrap();
+        assert!(made.is_none());
+        assert!(ex.features().is_empty());
+    }
 }

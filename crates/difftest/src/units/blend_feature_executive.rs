@@ -411,7 +411,28 @@ impl UnitDiff for Runner {
             Ok(raw) if raw.first() == Some(&-997.) => {
                 return Ok(Output::rejected(
                     "RestoreFeatures with two or more restorable features (upstream deletes \
-                     a feature it keeps)",
+                     a feature it keeps; upstream issue \
+                     restorefeatures-removes-wrong-entry-keeps-deleted-feature)",
+                ))
+            }
+            Ok(raw) if raw.first() == Some(&-996.) => {
+                return Ok(Output::rejected(
+                    "DoDefeature with a loop edge an applied patch's stitch deleted (upstream \
+                     reads it; upstream issue dodefeature-again-reads-stitched-loop-edges)",
+                ))
+            }
+            Ok(raw) if raw.first() == Some(&-995.) => {
+                return Ok(Output::rejected(
+                    "DoDefeature extends a surface without an extension (upstream \
+                     dereferences the NULL surface; upstream issue \
+                     extsurfacerebuild-null-extended-surface)",
+                ))
+            }
+            Err(FfiError::Status(solidcore_ffi::SC_ERR_CHILD_CRASHED)) => {
+                return Ok(Output::rejected(
+                    "the native script crashed (or ran past 60 s) in its fresh \
+                     child process (upstream issues extsurfacerebuild-xor-crash, \
+                     defeature-extension-runs-past-a-minute)",
                 ))
             }
             Ok(raw) => raw,

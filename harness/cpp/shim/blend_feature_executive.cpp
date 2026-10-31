@@ -31,6 +31,8 @@ template struct Rob<FlFPatch, &SmFeatureLoop::m_pFeatPatch>;
 template struct Rob<FlUseB, &SmFeatureLoop::m_bUseBPatch>;
 template struct Rob<FlUseF, &SmFeatureLoop::m_bUseFPatch>;
 template struct Rob<FlTried, &SmFeatureLoop::m_bTriedExtSurf>;
+struct FtJoined { typedef SmBoolean SmFeature::*type; friend type get(FtJoined); };
+template struct Rob<FtJoined, &SmFeature::m_bJoinedPatches>;
 
 SmRebuildBrepType rb(int64_t v) { return (SmRebuildBrepType)v; }
 
@@ -145,7 +147,7 @@ void put_brep(std::vector<double>& o, SmBrep* b) {
     put_geometry(g, b);
     o.push_back((double)g.size());
     o.insert(o.end(), g.begin(), g.end());
-    std::vector<double> graph;
+    std::vector<double> graph = {0.0};  // the import's leading status slot
     Graph walked;
     walk(b, walked, true);
     export_graph(b, walked, graph);
@@ -153,6 +155,102 @@ void put_brep(std::vector<double>& o, SmBrep* b) {
     o.insert(o.end(), graph.begin(), graph.end());
 }
 
+// Whether DoDefeature may extend a surface that has no extension: ExtSurfaceRebuild then
+// dereferences the NULL `CreateExtendedSurface` result (an analytic surface without the
+// override, e.g. a cylinder). For each loop side rebuilt by ExtendSurface or FromOtherBrep
+// with no patch yet and no failed try, the source faces along the loop whose outer loop
+// holds a loop edge are extended by the loop's distance (estimated as upstream when
+// negative). Before the partition the source faces are taken from the base B-rep: the
+// feature's own faces for the feature, the others for the base (the copies share their
+// geometry). This may refuse a script where the patch of the other side would be reused.
+bool null_extension(const SmContext& ctx, SmFeature* f) {
+    SmTArray<SmFace*> ffaces;
+    f->GetFaces(ffaces);
+    bool part = f->GetIsPartitioned() != FALSE;
+    SmTArray<SmFeatureLoop*> loops;
+    f->GetFeatureLoops(loops);
+    for (ULONG li = 0; li < loops.GetSize(); ++li) {
+        SmFeatureLoop* l = loops[li];
+        if (l->*get(FlTried())) continue;
+        for (int side = 0; side < 2; ++side) {
+            bool base = side == 0;
+            SmRebuildBrepType t = base ? l->GetBaseRBType() : l->GetFeatureRBType();
+            if (t != SM_RB_EXTEND_SURFACE && t != SM_RB_FROM_OTHER_BREP) continue;
+            if (base ? l->*get(FlBPatch()) : l->*get(FlFPatch())) continue;
+            bool base_src = base ^ (t == SM_RB_FROM_OTHER_BREP);
+            double d = base_src ? l->GetBaseExtDistance() : l->GetFeatureExtDistance();
+            const SmTArray<SmEdge*>& es =
+                (base_src || !part) ? l->*get(FlBase()) : l->*get(FlFeat());
+            if (d < 0.0) {
+                SmExtent3d box;
+                for (ULONG i = 0; i < es.GetSize(); ++i) {
+                    SmExtent3d one;
+                    es[i]->CalculateBoundingBox(&one);
+                    box.Union(one, box);
+                }
+                d = 2. * box.GetMaxLength();
+            }
+            SmTArray<SmFace*> fs;
+            for (ULONG i = 0; i < es.GetSize(); ++i) {
+                SmTArray<SmFace*> lf;
+                es[i]->GetFaces(lf);
+                fs.AppendUnique(lf);
+            }
+            for (ULONG i = 0; i < fs.GetSize(); ++i) {
+                SmFace* face = fs[i];
+                if (!part && (ffaces.IsIn(face) != FALSE) == base_src) continue;
+                SmTArray<SmEdge*> outer, common;
+                face->GetEdges(outer, NULL, TRUE);
+                outer.FindCommonElements(es, common);
+                if (common.GetSize() == 0) continue;
+                SmSurface* ns = NULL;
+                face->GetSurface()->CreateExtendedSurface(ctx, d, SM_CT_G1, ns);
+                if (!ns) return true;
+                delete ns;
+            }
+        }
+    }
+    return false;
+}
+// Whether DoDefeature would read a loop edge that is no longer in its B-rep: the
+// StitchAndOrient after an applied patch may delete loop edges. A later BuildPatches reads
+// the loop edges of every loop it builds a patch for (BuildPatch's source edges, and
+// JoinPatches' merged loops), and with joined patches reused for the feature the feature
+// edges of every loop (ValidatePatch). Only the pointers are compared.
+bool stale_edges(SmFeatureExecutive& ex, SmBrep* b) {
+    SmTArray<SmFeature*> fs;
+    ex.GetFeatures(fs);
+    SmTArray<SmEdge*> be;
+    b->GetEdges(be);
+    for (ULONG i = 0; i < fs.GetSize(); ++i) {
+        SmFeature* f = fs[i];
+        if (!f->GetIsPartitioned()) continue;
+        SmBrep* fb = f->GetFeatureBrep();
+        SmTArray<SmEdge*> fe;
+        if (fb) fb->GetEdges(fe);
+        SmTArray<SmFeatureLoop*> loops;
+        f->GetFeatureLoops(loops);
+        bool base_build = false, feat_build = false, b_for_f = true;
+        bool base_stale = false, feat_stale = false;
+        for (ULONG li = 0; li < loops.GetSize(); ++li) {
+            SmFeatureLoop* l = loops[li];
+            if (!(l->*get(FlBPatch()))) base_build = true;
+            if (!(l->*get(FlFPatch()))) feat_build = true;
+            if (l->GetFeatureRBType() != SM_RB_FROM_OTHER_BREP) b_for_f = false;
+            const SmTArray<SmEdge*>& lb = l->*get(FlBase());
+            const SmTArray<SmEdge*>& lf = l->*get(FlFeat());
+            for (ULONG j = 0; j < lb.GetSize(); ++j)
+                if (!be.IsIn(lb[j])) base_stale = true;
+            for (ULONG j = 0; j < lf.GetSize(); ++j)
+                if (!fe.IsIn(lf[j])) feat_stale = true;
+        }
+        bool validate_joined = (f->*get(FtJoined())) && b_for_f;
+        if (base_build && (base_stale || feat_stale)) return true;
+        if (validate_joined && feat_stale) return true;
+        if (!validate_joined && feat_build && (base_stale || feat_stale)) return true;
+    }
+    return false;
+}
 // Number of features whose RestoreFeature would succeed.
 int64_t restorable(SmFeatureExecutive& ex) {
     SmTArray<SmFeature*> fs;
@@ -170,7 +268,9 @@ int64_t restorable(SmFeatureExecutive& ex) {
 // the base B-rep (`put_brep`) and, per feature of GetFeatureBreps, `0` (none) or `1`
 // `put_brep`. A failed fixture build returns `-999 status`; an index past the fixture's faces
 // or edges `-998`; a RestoreFeatures with two or more restorable features `-997` (upstream
-// removes the wrong entry after the first and keeps a deleted feature).
+// removes the wrong entry after the first and keeps a deleted feature); a DoDefeature
+// that would read a loop edge an applied patch's stitch deleted `-996`; a DoDefeature that
+// may extend a surface without an extension `-995` (NULL dereference in ExtSurfaceRebuild).
 SC_EXPORT int32_t sc_blend_feature_executive_eval(const char* path, const double* input, int64_t n,
         const double* script, int64_t ns, double* out, int64_t cap, int64_t* out_len) {
     if (!input || n < 1 || !path || !out_len || !script || ns < 2) return SC_ERR_ARG;
@@ -271,6 +371,17 @@ SC_EXPORT int32_t sc_blend_feature_executive_eval(const char* path, const double
     for (int64_t oi = 0; oi < n_ops; ++oi) {
         int64_t op = sc.idx();
         if (op == 0) {
+            if (stale_edges(ex, b)) {
+                std::vector<double> ub = {-996.0};
+                return sc_copy_out(ub.data(), 1, out, cap, out_len);
+            }
+            SmTArray<SmFeature*> pre;
+            ex.GetFeatures(pre);
+            for (ULONG i = 0; i < pre.GetSize(); ++i)
+                if (null_extension(ctx, pre[i])) {
+                    std::vector<double> ub = {-995.0};
+                    return sc_copy_out(ub.data(), 1, out, cap, out_len);
+                }
             SmBrep* pb = nullptr;
             SmTArray<SmBrep*> fbs;
             SmStatus s = ex.DoDefeature(pb, &fbs);

@@ -26,7 +26,13 @@
 //! `status base_is_input n_feature_breps` or `RestoreFeatures`' status, then the
 //! features' states. A failed fixture build returns `-999 status`; an index past the
 //! fixture's faces or edges `-998`; a `RestoreFeatures` with two or more restorable
-//! features `-997` (upstream then deletes a feature it keeps in its list).
+//! features `-997` (upstream then deletes a feature it keeps in its list); a `DoDefeature`
+//! whose features keep a loop edge an applied patch's stitch deleted `-996` (upstream
+//! reads it); a `DoDefeature` that may extend a surface without an extension `-995`
+//! (upstream dereferences the NULL surface). The script runs in a fresh child process
+//! ([`crate::isolate::fresh_process_within`] [`CHILD_SECONDS`]): any other native crash,
+//! or a script still running then, is reported as
+//! [`FfiError::Status`]`(`[`SC_ERR_CHILD_CRASHED`](crate::SC_ERR_CHILD_CRASHED)`)`.
 
 use super::topology_edgeuse_p1::{brep_block, Reader};
 use crate::{call_with_buffer, FfiError};
@@ -46,6 +52,10 @@ mod sys {
         ) -> i32;
     }
 }
+
+/// The child's run time in seconds: the slowest fixture script takes a few seconds, and
+/// some scripts never end upstream (reported as a crash).
+pub const CHILD_SECONDS: u32 = 60;
 
 /// Largest count (features, faces, edges, loops, ops) a script may give.
 const MAX_COUNT: f64 = 100_000.0;
@@ -133,8 +143,8 @@ fn validate(script: &[f64]) -> Result<(), FfiError> {
     Ok(())
 }
 
-/// Runs `script` on an `SmFeatureExecutive` over the B-rep that `block` builds (see the
-/// module docs).
+/// Runs `script` on an `SmFeatureExecutive` over the B-rep that `block` builds, in a fresh
+/// child process (see the module docs).
 pub fn eval(path: &str, block: &[f64], script: &[f64]) -> Result<Vec<f64>, FfiError> {
     let bad = |m: &str| FfiError::InvalidArgument(m.into());
     let mut rd = Reader {
@@ -148,6 +158,10 @@ pub fn eval(path: &str, block: &[f64], script: &[f64]) -> Result<Vec<f64>, FfiEr
         return Err(bad("short script"));
     }
     let path = CString::new(path).map_err(|_| bad("path"))?;
+    crate::isolate::fresh_process_within(CHILD_SECONDS, || run(&path, block, script))
+}
+
+fn run(path: &CString, block: &[f64], script: &[f64]) -> Result<Vec<f64>, FfiError> {
     call_with_buffer(1 << 22, |out, len| {
         // SAFETY: the validated block and script stay live through the call; the output
         // and length pointers come from call_with_buffer.
