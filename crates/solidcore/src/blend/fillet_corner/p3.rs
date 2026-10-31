@@ -2127,7 +2127,7 @@ impl FilletCorner {
                         .ok_or_else(|| invalid(OP_TOPO, "m_cpVertex is NULL"))?,
                     self.solver_eus
                         .as_ref()
-                        .and_then(|eus| eus.get(0).copied())
+                        .and_then(|eus| eus.first().copied())
                         .ok_or_else(|| invalid(OP_TOPO, "m_pSolverEUs[0] is NULL"))?,
                     self.solver_eus
                         .as_ref()

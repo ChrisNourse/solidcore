@@ -89,11 +89,7 @@ struct Basin {
 impl Basin {
     fn at(self, z: f64) -> [f64; 4] {
         let t = (z - 10.0) / 20.0;
-        let mut r = [0.0; 4];
-        for i in 0..4 {
-            r[i] = self.bottom[i] + (self.top[i] - self.bottom[i]) * t;
-        }
-        r
+        core::array::from_fn(|i| self.bottom[i] + (self.top[i] - self.bottom[i]) * t)
     }
 
     fn build(self, k: &mut Kernel) -> Brep {
