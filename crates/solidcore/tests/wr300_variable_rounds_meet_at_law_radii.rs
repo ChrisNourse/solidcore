@@ -5,7 +5,7 @@
 //! rounds 0.5 -> 2 along a 10 box's top edges meeting at (10, 10, 10) (the vertical edge
 //! there not rounded) had their rails meet at (10, 8, 8), radius 2, where the law gives
 //! 1.7, and the trace from that end, its spans held to the law
-//! (`fillet_variable_span_follows_fillet`, 4438859), failed with 1001: the SM_API test
+//! (`fillet_variable_span_follows_fillet`, 4438859), failed with 1001: the `SM_API` test
 //! `TestSmVariableRadiusFillet`, which rounds four top edges.
 //!
 //! The fork's check: a sound body removing more than one round alone,
