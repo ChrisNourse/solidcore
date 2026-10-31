@@ -2186,6 +2186,19 @@ fn extend_toward(k: &Kernel, surface: &Surface, uv: Point2) -> Result<Surface> {
     Ok(Surface::from(BSplineSurface::from_gw_nurb(&ext.surface)))
 }
 
+/// `a > b` (false for a `NaN` operand), as the fork's `!(a > b)` tests read it.
+fn gt(a: f64, b: f64) -> bool {
+    a.partial_cmp(&b) == Some(core::cmp::Ordering::Greater)
+}
+
+/// `a <= b` (false for a `NaN` operand).
+fn le(a: f64, b: f64) -> bool {
+    matches!(
+        a.partial_cmp(&b),
+        Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+    )
+}
+
 /// A control point and its weight (the fork's `sm_CPt`).
 #[derive(Debug, Clone, Copy)]
 struct WeightedPoint {
@@ -2278,7 +2291,7 @@ fn rot_turn(rev: &SurfOfRevolution) -> Result<RotTurn> {
     };
     let arc = (rev.end_angle_deg() - rev.start_angle_deg()) * (PI / 180.0);
     let length = ivl.max() - ivl.min();
-    if !(arc > 0.0) || !(arc <= 2.0 * PI) || !(length > 0.0) {
+    if !gt(arc, 0.0) || !le(arc, 2.0 * PI) || !gt(length, 0.0) {
         return Err(SolidError::sm_err(OP_EXTEND));
     }
     let half_gap = PI - 0.5 * arc;
@@ -2294,8 +2307,8 @@ fn rot_turn(rev: &SurfOfRevolution) -> Result<RotTurn> {
         angle,
         span,
         close,
-        lo: ivl.min() + -1.0 * (close as f64 * span),
-        hi: ivl.max() + 1.0 * (close as f64 * span),
+        lo: ivl.min() + -(close as f64 * span),
+        hi: ivl.max() + (close as f64 * span),
     })
 }
 
@@ -2363,7 +2376,7 @@ const AS_ITSELF_MAX_SPANS: usize = 4096;
 /// `sign`), their knots appended to `knots`: at least one where the goal lies past `from`
 /// (the fork's `Spans`).
 fn as_itself_spans(span: f64, from: f64, goal: f64, sign: f64, knots: &mut Vec<f64>) -> Result<()> {
-    if !(span > 0.0) {
+    if !gt(span, 0.0) {
         return Err(SolidError::sm_err(OP_EXTEND));
     }
     // (ULONG)ceil(...): saturating, so a reach past the bound fails below
@@ -2501,7 +2514,7 @@ fn extend_as_itself(
         let from = if high { gen.back() } else { gen.front() };
         let goal = if high { gen_hi } else { gen_lo };
         let sign = if high { 1.0 } else { -1.0 };
-        if !((goal - from) * sign > 0.0) {
+        if !gt((goal - from) * sign, 0.0) {
             continue;
         }
         let lg = g.first().map_or(0, Vec::len);
@@ -2513,7 +2526,7 @@ fn extend_as_itself(
         let mut new_knots = Vec::new();
         let mut new: Vec<Vec<WeightedPoint>> = Vec::new(); // per column, outward
         if gen_circle {
-            if !(gen_angle > 0.0) {
+            if !gt(gen_angle, 0.0) {
                 return Err(err());
             }
             as_itself_spans(
@@ -2550,7 +2563,7 @@ fn extend_as_itself(
                 }
             }
             let ref0 = net_at(&g, 0, i_ref)?;
-            if !(d_ref > 0.0) || !(ref0.w > 0.0) {
+            if !gt(d_ref, 0.0) || !gt(ref0.w, 0.0) {
                 return Err(err());
             }
             let rho0 = radial(ref0.p, o, z);
@@ -2583,7 +2596,7 @@ fn extend_as_itself(
             } else {
                 gen.at(1) - gen.front()
             };
-            if !(last > 0.0) {
+            if !gt(last, 0.0) {
                 return Err(err());
             }
             let f = (goal - from) * sign / last;
@@ -2591,7 +2604,7 @@ fn extend_as_itself(
             for r in 0..g.len() {
                 let (a, b) = (net_at(&g, r, i_end)?, net_at(&g, r, i_in)?);
                 let w = a.w + (a.w - b.w) * f;
-                if !(w > 0.0) {
+                if !gt(w, 0.0) {
                     return Err(err());
                 }
                 new.push(vec![WeightedPoint {
@@ -2615,7 +2628,7 @@ fn extend_as_itself(
         let from = if high { rot.back() } else { rot.front() };
         let goal = if high { rot_hi } else { rot_lo };
         let sign = if high { 1.0 } else { -1.0 };
-        if !((goal - from) * sign > 0.0) {
+        if !gt((goal - from) * sign, 0.0) {
             continue;
         }
         let mut new_knots = Vec::new();
@@ -2649,7 +2662,7 @@ fn extend_as_itself(
         let at_end = net_at(&g, r_end, i_ref)?.p;
         let at_in = net_at(&g, r_in, i_ref)?.p;
         let sense = (at_end - o).cross(at_end - at_in).dot(z);
-        if !(d_ref > 0.0) || sense == 0.0 {
+        if !gt(d_ref, 0.0) || sense == 0.0 {
             return Err(err());
         }
         let axis = if sense > 0.0 { z } else { -z };
@@ -3696,5 +3709,73 @@ mod tests {
         // without the flag: upstream's tangent extension, a domain or more each way
         let [off_radius, _, reach, _, _] = wr650_partial_cylinder(false);
         assert!(off_radius > 1e-3 && reach > 1.0, "{off_radius} {reach}");
+    }
+
+    /// The farthest an offset `d` of `base` evaluated 0.3 and 0.6 domains past each side
+    /// (and past both sides at once) lies off the surface `off` measures, with both
+    /// extension flags on (WR-650: a sphere's or torus's generator continues as a circle).
+    fn wr650_off_surface(base: Surface, d: f64, off: impl Fn(Point3) -> f64) -> f64 {
+        let mut k = Kernel::default();
+        k.fixes.offset_extension_from_base = true;
+        k.fixes.offset_extension_as_itself = true;
+        let dom = base.natural_uv_domain_with_nurb(&k).unwrap();
+        let (lo, hi, size) = (dom.min(), dom.max(), dom.size());
+        let mut o = OffsetSurface::new(&k, d, base, true, crate::geom::extent2d::SS_NONE).unwrap();
+        o.set_allow_extension(true);
+        let mid = dom.mid();
+        let mut worst: f64 = 0.0;
+        for f in [0.3, 0.6] {
+            let (du, dv) = (f * size.x, f * size.y);
+            for uv in [
+                Point2::new(hi.x + du, mid.y),
+                Point2::new(lo.x - du, mid.y),
+                Point2::new(mid.x, hi.y + dv),
+                Point2::new(mid.x, lo.y - dv),
+                Point2::new(hi.x + du, hi.y + dv),
+                Point2::new(lo.x - du, lo.y - dv),
+            ] {
+                let p = o.evaluate_point_extending(&k, uv).unwrap();
+                worst = worst.max(off(p).abs());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn wr650_sphere_and_torus_generators_continue_as_circles() {
+        use crate::surface::sphere::{Sphere, SphereOptions};
+        use crate::surface::torus::{Torus, TorusOptions};
+        let k = Kernel::default();
+        let torus = Torus::new(
+            &k,
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Extent2d::from_bounds(0.0, -60.0, 200.0, 60.0),
+            10.0,
+            3.0,
+            TorusOptions::default(),
+        )
+        .unwrap();
+        let off = wr650_off_surface(Surface::from(torus), 1.0, |p| {
+            let r = (p.x * p.x + p.y * p.y).sqrt() - 10.0;
+            (r * r + p.z * p.z).sqrt() - 4.0
+        });
+        assert!(
+            off < 1e-9,
+            "the torus's extension is {off} off the tube r 4"
+        );
+        let sphere = Sphere::new(
+            &k,
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Extent2d::from_bounds(0.0, -30.0, 120.0, 40.0),
+            5.0,
+            SphereOptions::default(),
+        )
+        .unwrap();
+        let off = wr650_off_surface(Surface::from(sphere), 2.0, |p| p.length() - 7.0);
+        assert!(off < 1e-9, "the sphere's extension is {off} off radius 7");
     }
 }
