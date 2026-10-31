@@ -116,8 +116,8 @@ use crate::error::SM_SUCCESS;
 // `SM_ERR_UNKNOWN`.
 use crate::error::SM_ERR_UNKNOWN;
 
-/// `UNSURE` of `SmBoolean`.
-const UNSURE: i32 = crate::surface::surface::p2::UNSURE;
+// `UNSURE` of `SmBoolean`.
+use crate::error::SM_UNSURE as UNSURE;
 
 fn null(reason: &'static str) -> SolidError {
     SolidError::invalid_input(OP, reason)
