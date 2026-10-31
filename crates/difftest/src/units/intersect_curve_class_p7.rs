@@ -960,11 +960,13 @@ fn real_endpoint_cases() -> Vec<(String, Value)> {
             } else {
                 ([0.5, 0.5, 0.0], [0.0, -0.5, 0.0])
             };
-            objects[0] = ObjIn::Curve(CurveIn::Line(LineIn {
-                p, v, domain: [0.0, 1.0],
-                scale: if name == "max_vertex" { 0.5_f64.sqrt() } else { 0.5 },
-                inside_out: false,
-            }));
+            if let Some(slot) = objects.first_mut() {
+                *slot = ObjIn::Curve(CurveIn::Line(LineIn {
+                    p, v, domain: [0.0, 1.0],
+                    scale: if name == "max_vertex" { 0.5_f64.sqrt() } else { 0.5 },
+                    inside_out: false,
+                }));
+            }
         }
         let script = Script { objects, face: Some(face.clone()), cc: [cc.clone(), cc],
             ops: vec![OpIn::ClassifyFace { t: 0, j: 0, do_point: false,
