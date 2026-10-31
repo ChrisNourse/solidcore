@@ -1,7 +1,7 @@
 # surface.plane_p2: Opt-in origin correction for plane recognition (2026-10-26)
 
 - **Unit:** `surface.plane_p2`, `Plane::is_nurb_surface_plane`.
-- **Issue:** SolidCore #1056; upstream source defect WR-444 in `plan/upstream-issues/WR-444--plane-recognition-origin-before-axis-correction.md`.
+- **Issue:** SolidCore #1056; upstream source defect WR-652 in `plan/upstream-issues/WR-652--plane-recognition-origin-before-axis-correction.md`.
 - **Inputs:** A planar bilinear B-spline with corners `(0,0,0)`, `(2,0,0)`, `(1.28e-6,40,0)`, `(2.00000128,40,0)`, reparameterised to U `[2,3]` and V `[4,5]` or `[-5,-4]`. The upper corner is used when the recogniser calculates its point tolerance, giving about 41e-6 mm so both variants can return planes whose displacement can be checked.
 - **Values:** Source arithmetic predicts lower-corner X errors of `-5.12e-6` and `+6.4e-6` mm respectively in the default path. With `Kernel::fixes.plane_recognition_origin_after_axes = true`, that corner is anchored. The upper corner retains about `-1.28e-6` mm X residual because the orthogonal plane cannot represent the original small parameter shear exactly. These analytic expectations were exercised by the Rust regressions at published head `19c3188442d230642bf9ee5406649191631eaf0b`; they are not opt-in Rust/C++ parity measurements, because pinned SMLib retains the default behavior.
 - **Cause:** SMLib computes the new origin with the pre-correction Y axis but evaluates the plane with the corrected axis. The nonzero V minimum multiplies the axis difference.
