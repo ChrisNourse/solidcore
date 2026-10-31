@@ -823,12 +823,15 @@ impl RingFilletRemoval {
 }
 
 /// `pEdge->SetCurve(pCurve, TRUE)` (deleting the old curve and the edge uses' UV trim
-/// curves; status ignored), then `pCurve->SetOwner(pEdge)` (the owner set first here).
+/// curves; status ignored), then `pCurve->SetOwner(pEdge)` (the owner set first here,
+/// to the edge's [`Brep::owner_identity`]).
 fn install_curve(k: &mut Kernel, b: &mut Brep, e: EdgeId, curve: Option<Curve>) -> Result<()> {
     with_kernel_callbacks(k, b, |_k, b, env| {
         let mut curve = curve;
         if let Some(c) = curve.as_mut() {
-            let owner = (env.key_of)(EntityRef::Edge(e));
+            // the identity the B-rep names the edge's geometry owner by (what the check
+            // compares), not the edit's notification identity
+            let owner = b.owner_identity(EntityRef::Edge(e));
             let _ = c.set_owner(Some(owner), Some(brep_p2::brep_ref(b)));
         }
         let options = SetCurveOptions {
