@@ -138,9 +138,50 @@ impl Caches {
     }
 }
 
+/// Emits the [`UpstreamFixes`] definition it wraps unchanged, plus
+/// [`UpstreamFixes::NAMES`] and [`UpstreamFixes::flags`] read from that same field
+/// list, so a new field is listed by name with no second place to edit (#2014). It
+/// accepts only `pub <name>: bool` fields (each with its doc comment), so a field of
+/// another type fails to compile instead of being left out of the list.
+macro_rules! upstream_fixes {
+    (
+        $(#[$meta:meta])*
+        pub struct $name:ident {
+            $(
+                $(#[$field_meta:meta])*
+                pub $field:ident: bool
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        pub struct $name {
+            $(
+                $(#[$field_meta])*
+                pub $field: bool,
+            )*
+        }
+
+        impl $name {
+            /// The name of every flag (its field name), in declaration order.
+            pub const NAMES: &'static [&'static str] = &[$(stringify!($field)),*];
+
+            /// Every flag as `(name, on)`, in declaration order: the names of
+            /// [`Self::NAMES`], each with its field's value.
+            pub fn flags(&self) -> impl Iterator<Item = (&'static str, bool)> {
+                Self::NAMES.iter().copied().zip([$(self.$field),*])
+            }
+        }
+    };
+}
+
+upstream_fixes! {
 /// Opt-in fixes of upstream SMLib defects (`plan/upstream-issues/`), all off by default
 /// (upstream behaviour). Set them on [`Kernel::fixes`] before running operations; each
 /// field names its record (`WR-…`) and the `tangency-labs/solidcore` issue.
+///
+/// [`UpstreamFixes::flags`] lists every field with its value and
+/// [`UpstreamFixes::NAMES`] every field name, both in declaration order. `upstream_fixes!`
+/// generates them from this definition, so a new field needs no other edit to be listed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 #[non_exhaustive]
@@ -501,6 +542,12 @@ pub struct UpstreamFixes {
     pub boolean_splits_definition_across_split: bool,
     /// `SmProtoEdge::Resolve` splits a proto edge from a proto vertex back to itself whose curve ends find two of its vertex definitions at each other definition of that proto vertex lying on the curve (`DropPoint` within the larger of the two tolerances, farther than twice it from both ends), then resolves the proto vertex; upstream keeps the edge whole past that third vertex, a vertex of its own face, and the merge fails (`SM_ERR`; two equal tubes a hair apart end to end) (WR-579, #1517; the fork's tangency-labs/smlib@9eec159).
     pub proto_edge_splits_at_captured_vertices: bool,
+    /// `SmProtoEdge::Split` gives the new upper child proto edge the split parameter to this
+    /// edge's old maximum, `[dT, old_max]`, where pinned v1.0.1 reads this edge's maximum
+    /// after clamping it and the upper child gets the empty interval `[dT, dT]` (WR-101;
+    /// `plan/upstream-issues/WR-101--addendum-2026-10-31-opt-in-upper-interval.md`). The
+    /// lower child is `[old_min, dT]` either way. Off by default for pinned C++ parity.
+    pub proto_edge_split_upper_keeps_the_old_max: bool,
     /// `SmMerge::BooleanPostProcess` also checks the merged face's edges that a face merge left with that face on both sides (slits), not only the intersection edges (WR-304, #1120).
     pub boolean_cleanup_removes_slits: bool,
     /// `SmFace::CurveOnClassify` classifies an interval whose two ends lie on one face edge (or its vertices) and whose midpoint is within the intersection tolerance of it as on that edge (the fork's `ClassifyEdgeInterval`, WR-305, #1057).
@@ -732,6 +779,7 @@ pub struct UpstreamFixes {
     ///
     /// [`MAX_START_LOOP_TRACE_STEPS`]: crate::intersect::surface_intersector::p4::MAX_START_LOOP_TRACE_STEPS
     pub ssi_start_loop_trace_budget: bool,
+}
 }
 
 /// Options for [`Kernel::new`].
