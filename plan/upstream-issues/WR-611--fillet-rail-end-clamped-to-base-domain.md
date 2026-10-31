@@ -7,3 +7,5 @@
 - **How found:** SolidCraft (#960, #1467). The fork's fix is tangency-labs/smlib@3f22e97 (rev `68fb9162`), which is not merged upstream. The same commit makes `CalcCornerEdgeGeom` take a rail end off its side edge (by more than the tolerance) as missing it, inside the cliff overflow's branch of that function.
 - **Confirmed:** no C++ run of the fork was made. The Rust port follows the pinned C++ (`3fd5b95`) with the flag off.
 - **Rust port:** behaves as upstream by default. With `Kernel::fixes.fillet_rail_end_on_continued_surface`, the rail end is evaluated with out-of-bounds evaluation on, in place, as the fork's `SmTemporaryChangeValue` on `GetOutOfBoundsEnabled()` does (`blend/fillet_geom/p2.rs`, `calc_rail_int_edgeuse_with_solvers`). The `CalcCornerEdgeGeom` half of the commit sits inside the cliff overflow's branch, which is not ported yet (#960): it is not part of this flag.
+
+  Tests: `crates/solidcore/tests/wr611_rail_end_on_continued_surface.rs` (the 40 x 20 x 10 box's edge r10.05 with `fillet_trace_reaches_rails`: the rail ends on the front face sit at z = 0 without the flag, at z = -0.05 with it).
