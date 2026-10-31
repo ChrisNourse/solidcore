@@ -217,3 +217,15 @@ fn issue_1476_swept_bar_shells() {
 fn issue_1476_swept_bar_shells_with_solidcraft_fixes() {
     check(solidcraft_fixes(), 1299.482314966473);
 }
+
+/// With `shell_edges_on_analytics_exact` (WR-545, the fork's tangency-labs/smlib@cd85d34)
+/// the edges between analytic faces are intersected on the faces' own surfaces, which
+/// reach their faces' caches through the B-rep; before that, the shell stopped on
+/// `Unported` (#1950). The volume is the one without the flag, to 1e-9 (SolidCraft's rig gives
+/// 1299.4823 for shell/566, with its other fixes).
+#[test]
+fn issue_1476_swept_bar_shells_with_exact_analytic_edges() {
+    let mut fixes = UpstreamFixes::default();
+    fixes.shell_edges_on_analytics_exact = true;
+    check(fixes, 1299.4876808844865);
+}

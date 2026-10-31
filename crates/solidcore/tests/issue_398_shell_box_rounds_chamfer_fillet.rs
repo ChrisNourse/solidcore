@@ -314,3 +314,24 @@ fn issue_398_by_step() {
         }
     }
 }
+
+/// With `shell_edges_on_analytics_exact` (WR-545, the fork's tangency-labs/smlib@cd85d34)
+/// the open shell's edges between analytic faces become their exact lines and conics.
+/// Their intersections run on the faces' own surfaces, which reach their faces' caches
+/// through the B-rep; before that, the shell stopped on `Unported` (#1950). The fork's C++
+/// gives 51 faces and V 13701.7343 with the flag (SolidCraft's rig, shell/1525; 13701.7355
+/// without it); the port's volume is pinned to 1e-9.
+#[test]
+fn issue_398_open_top_shell_with_exact_analytic_edges() {
+    let (mut k, b) = part_with(true);
+    k.fixes.shell_edges_on_analytics_exact = true;
+    let mut got = shell_of(&mut k, b, true).unwrap();
+    assert!(brep_is_manifold_solid(&got).unwrap());
+    let v = volume(&k, &mut got).unwrap();
+    assert!(
+        (v - 13701.7355).abs() <= 1e-6 * 13701.7355,
+        "{v} vs the rig's"
+    );
+    let want = 13701.73449509504;
+    assert!((v - want).abs() <= 1e-9 * want, "{v} vs {want}");
+}

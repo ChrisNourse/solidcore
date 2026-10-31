@@ -171,6 +171,7 @@ use crate::nurbs::b_spline_surface::BSplineSurface;
 use crate::nurbs::b_spline_surface_n_lib::p2::{EvaluateFlags, OrientType};
 use crate::nurbs::knots::Side;
 use crate::nurbs::math::{NOW, NOZ};
+use crate::query::brep::BrepFaceServices;
 use crate::query::edge::ClosestPoint;
 use crate::surface::offset_surface::{OffsetSurface, SS_UNKNOWN as OFFSET_SS_UNKNOWN};
 use crate::surface::surface::p1::SurfaceSolveContext;
@@ -183,6 +184,7 @@ use crate::surface::surface_cache::face_context::FaceQueries;
 use crate::surface::surface_cache::SurfaceCache;
 use crate::topology::brep::p1 as bp1;
 use crate::topology::brep::p2 as brep_p2;
+use crate::topology::brep_cache::CacheObject;
 use crate::topology::edge::{self as topo_edge, NotificationStores, NotifyState};
 use crate::topology::edgeuse::p1 as eu1;
 use crate::topology::face::p3::create_uv_trim_curves;
@@ -1315,8 +1317,9 @@ fn exact_piece(k: &Kernel, marched: &Curve, exact: &[Curve], tol: f64) -> Result
 ///
 /// # Errors
 ///
-/// [`SolidError::Unported`] from the intersections; those of the evaluations, of the
-/// curve replacement and of `CreateUVTrimCurves`.
+/// [`SolidError::Unported`] from the intersections (run through the B-rep's
+/// [`BrepFaceServices`], so each face's surface reaches its own cache); those of the
+/// evaluations, of the curve replacement and of `CreateUVTrimCurves`.
 pub fn make_edges_on_analytics_exact(
     k: &mut Kernel,
     b: &mut Brep,
@@ -1348,16 +1351,34 @@ pub fn make_edges_on_analytics_exact(
         if !s1.is_analytic()? || !s2.is_analytic()? {
             continue;
         }
+        // The faces' own surfaces reach their faces' caches through the B-rep
+        // (`smsurf_GetSurfaceCache` of a face-owned surface): exact evaluation copies
+        // (same owner and cache slot), as the caches are made on the B-rep meanwhile.
+        let s1 = s1.clone_for_evaluation()?;
+        let s2 = s2.clone_for_evaluation()?;
+        let (domain1, domain2) = (
+            s1.natural_uv_domain_with_nurb(k)?,
+            s2.natural_uv_domain_with_nurb(k)?,
+        );
         // The surfaces' own intersection: none found (tangent surfaces) leaves the edge.
-        let exact = match s1.global_surface_intersect(
-            k,
-            &s1.natural_uv_domain_with_nurb(k)?,
-            s2,
-            &s2.natural_uv_domain_with_nurb(k)?,
-            use_surface_edges,
-            Some(ssi_tol),
-            Some(deg20_rad),
-        ) {
+        let found = {
+            let mut services = BrepFaceServices::new(&mut *b);
+            s1.global_surface_intersect_with_context(
+                k,
+                [
+                    Some(CacheObject::Surface(f0)),
+                    Some(CacheObject::Surface(f1)),
+                ],
+                &mut services,
+                &domain1,
+                &s2,
+                &domain2,
+                use_surface_edges,
+                Some(ssi_tol),
+                Some(deg20_rad),
+            )
+        };
+        let exact = match found {
             Ok(exact) => exact,
             Err(err @ SolidError::Unported { .. }) => return Err(err),
             Err(_) => continue,
