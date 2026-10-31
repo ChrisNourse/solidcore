@@ -3044,7 +3044,7 @@ mod tests {
     /// `mirror_rational_divides_twice`: a 2D rational quadratic whose middle control
     /// point is `(0.5, 0.5, NOZ, w)`, i.e. the Euclidean point `(0.5/w, 0.5/w)`.
     fn mirror_rational_fixture_curve() -> Curve {
-        let w = 0.707_106_781_186_547_6;
+        let w = std::f64::consts::FRAC_1_SQRT_2;
         let pw = vec![
             CPoint::new(0.0, 0.0, NOZ, 1.0),
             CPoint::new(0.5, 0.5, NOZ, w),
@@ -3058,7 +3058,7 @@ mod tests {
     /// (`CPoint` is homogeneous, so each point is stored as `(w*x, w*y, NOZ, w)`).
     fn mirror_rational_euclidean_curve() -> (Curve, [[f64; 2]; 3], [f64; 3]) {
         let points = [[0.0, 0.0], [0.5, 0.5], [1.0, 0.0]];
-        let weights = [1.0, 0.707_106_781_186_547_6, 1.0];
+        let weights = [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0];
         let pw = points
             .iter()
             .zip(weights)
