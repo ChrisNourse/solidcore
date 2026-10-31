@@ -291,14 +291,14 @@ pub(super) fn extend_path_curves_impl(
 pub fn position_profile_curves(
     k: &Kernel,
     profiles: &[Curve],
-    _tol: f64,
+    tol: f64,
     path: &Curve,
     output: &mut Vec<Curve>,
 ) -> Result<()> {
     position_profile_curves_impl(
         k,
         profiles,
-        _tol,
+        tol,
         path,
         output,
         k.fixes.planar_path_profile_placement_statuses,
@@ -449,7 +449,7 @@ mod tests {
         let profile =
             Curve::from(BSplineCurve::create_line_segment(3, Vec3::ZERO, Vec3::X).unwrap());
         let path = Curve::from(BSplineCurve::create_line_segment(3, Vec3::ZERO, Vec3::Z).unwrap());
-        let expected = compute_crvs_normal(&k, &[profile.clone()]).unwrap_err();
+        let expected = compute_crvs_normal(&k, std::slice::from_ref(&profile)).unwrap_err();
         let mut output = Vec::new();
         assert_eq!(
             position_profile_curves(&k, &[profile], 1e-9, &path, &mut output).unwrap_err(),

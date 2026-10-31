@@ -109,6 +109,7 @@
 //!   [`SolidError::InvalidInput`].
 //! - **Iteration.** No loop here depends on more than the caller's array sizes; there
 //!   is no recursion.
+//!
 //! With `Kernel::fixes.fillet_edge_curve_domain_statuses`, failed edge-curve
 //! copy/trim statuses propagate before returning the copy as trimmed (#483).
 //!

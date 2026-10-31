@@ -115,7 +115,7 @@ impl SweepAccess for FaultAccess<'_> {
     }
     fn delete_brep(&mut self, id: BrepId) {
         self.deleted.push(id);
-        self.inner.delete_brep(id)
+        self.inner.delete_brep(id);
     }
     fn new_merge(
         &mut self,
@@ -153,7 +153,7 @@ impl SweepAccess for FaultAccess<'_> {
         self.inner.union(arg1)
     }
     fn delete_merge(&mut self, arg1: SweepMergeId) {
-        self.inner.delete_merge(arg1)
+        self.inner.delete_merge(arg1);
     }
     fn tag(&self, arg1: SweepEntity) -> Result<Option<TagData>> {
         self.inner.tag(arg1)

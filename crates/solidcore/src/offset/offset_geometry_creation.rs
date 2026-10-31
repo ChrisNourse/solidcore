@@ -4812,8 +4812,8 @@ mod tests {
                 &mut (),
                 2,
                 1e-6,
-                |_, _, _| Ok(Vec3::X),
-                |_, _, _| Ok(Some(2e-6))
+                |_, (), _| Ok(Vec3::X),
+                |_, (), _| Ok(Some(2e-6))
             )
             .unwrap());
         }
