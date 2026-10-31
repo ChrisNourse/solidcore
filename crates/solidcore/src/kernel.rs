@@ -317,7 +317,7 @@ pub struct UpstreamFixes {
     pub planar_path_profile_placement_statuses: bool,
     /// `PositionProfileCurves` places profiles in the planar path's own XY frame (one
     /// frame for all its pieces), then maps them back, instead of using global X and Z
-    /// to orient them (WR-1256). This keeps the profile's roll and first-point anchor
+    /// to orient them (WR-660). This keeps the profile's roll and first-point anchor
     /// under rigid motions, including vertical planes and reversed plane normals.
     /// Paths in or parallel to XY with either normal retain upstream arithmetic;
     /// straight paths retain upstream placement. A path of several pieces also needs
