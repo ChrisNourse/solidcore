@@ -182,7 +182,7 @@ enum Open {
 }
 
 impl Open {
-    fn faces(self, k: &Kernel, b: &Brep) -> Vec<solidcore::FaceId> {
+    fn faces(self, k: &Kernel, b: &Brep) -> Vec<FaceId> {
         match self {
             Open::Z27 => planar_faces_at(k, b, 2, 27.5),
             Open::Y20 => planar_faces_at(k, b, 1, 20.0),
@@ -193,8 +193,10 @@ impl Open {
 /// The plate shelled through the API (`SmApiShellBrepFull`, as `smlib_shell` and the
 /// difftest runner call it) under `fixes`.
 fn probe(fixes: UpstreamFixes, create_offset_solid: bool, open: Open) -> solidcore::Result<Brep> {
-    let mut k = Kernel::default();
-    k.fixes = fixes;
+    let mut k = Kernel {
+        fixes,
+        ..Default::default()
+    };
     let mut b = drilled(&mut k);
     let open = open.faces(&k, &b);
     assert_eq!(open.len(), 1, "one open face");
@@ -216,7 +218,7 @@ fn issue_1795_extended_edges_mated() {
                 "PROBE 1795 open={open:?} offset_extended_edges_mated, cos=true: Err({e:?})"
             ),
             Ok(_) => {
-                eprintln!("PROBE 1795 open={open:?} offset_extended_edges_mated, cos=true: Ok")
+                eprintln!("PROBE 1795 open={open:?} offset_extended_edges_mated, cos=true: Ok");
             }
         }
     }
@@ -253,7 +255,7 @@ fn issue_1795_edge_map() {
         eprintln!(
             "PROBE 1795 edgeuse {} -> edge {:?}",
             eu.index(),
-            rec.edge.map(|e| e.index())
+            rec.edge.map(EdgeId::index)
         );
     }
     for e in b.edge_list().iter().copied() {
