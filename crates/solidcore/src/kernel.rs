@@ -408,13 +408,15 @@ pub struct UpstreamFixes {
     /// 4803d6d; #483, changed by #2009); `ClosestPoint`'s status stays dropped and a
     /// successful query without a solution keeps its existing meaning.
     pub offset_tangent_gap_statuses: bool,
-    /// Surface-intersection singularity alignment returns failed direction angles
-    /// instead of treating them as zero (#483). Captured when the intersector is built.
+    /// Surface-intersection singularity alignment aligns nothing when the direction
+    /// angle cannot be computed, as the fork does (`ALIGN_DIR_WITH_PREVIOUS_POINT`,
+    /// tangency-labs/smlib e7ebc8d; #483, changed by #2009) instead of comparing an angle
+    /// read as zero. Captured when the intersector is built.
     pub ssi_alignment_statuses: bool,
     /// The B-rep's own edits, its `StitchAndOrient`, the offset and shell stitches and the
     /// Boolean merge, stitch and topology-intersection passes pass on the statuses SMLib
     /// drops: a failed list edit, evaluation, trim, stitch or orientation returns its error
-    /// instead of the operation carrying on and reporting success (WR-654, #2009 group A;
+    /// instead of the operation carrying on and reporting success (WR-658, #2009 group A;
     /// tangency-labs/smlib 60a8a51, 4803d6d, e7ebc8d). Off by default for pinned parity.
     pub brep_edit_statuses_pass_on: bool,
     /// `SmShell::IsInnerShellOf` passes on the statuses it ignores (fork 4038552): `UNSURE` when the outer shell's closure, the B-rep's box, the sample points or a crossing face's point or normal cannot be computed; a ray that cannot be solved or classified decides nothing and the next ray is tried (WR-497, #1473).

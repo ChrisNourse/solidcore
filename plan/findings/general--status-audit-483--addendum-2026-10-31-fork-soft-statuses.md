@@ -18,3 +18,14 @@ unchanged (upstream: the unset point is measured). Tests:
 `offset::offset_geometry_creation::tests::tangent_gaps_skip_a_sample_that_cannot_be_evaluated`
 (an unset point that reads as a gap upstream shows none with the flag) and the updated
 `audit_483_tangent_gaps_preserve_errors_and_no_solution`.
+
+## `ssi_alignment_statuses` likewise follows the fork
+
+`ALIGN_DIR_WITH_PREVIOUS_POINT` (tangency-labs/smlib e7ebc8d) leaves the point's
+direction as it is when the angle to the previous direction cannot be computed (a zero
+tangent); it no longer propagates the angle's error. With the flag set,
+`align_with_previous` (`crates/solidcore/src/intersect/adv_surface_intersector.rs`)
+aligns nothing without an angle. The outcome equals the flag-off one (an angle read as
+0 is never within the flip band of PI), so the flag now only states the fork's reason.
+Tests: `intersect::adv_surface_intersector::tests::audit_483_alignment_skips_failed_angles_without_flipping`
+and the updated `audit_483_singularity_alignment_uses_the_captured_policy`.

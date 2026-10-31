@@ -1,5 +1,5 @@
 //! #2009 group A: statuses SMLib drops and the SolidCraft fork passes on, behind
-//! `UpstreamFixes::brep_edit_statuses_pass_on` (WR-654). No input fails these calls on
+//! `UpstreamFixes::brep_edit_statuses_pass_on` (WR-658). No input fails these calls on
 //! valid geometry, so each test injects the callee's failure and checks that the
 //! status reaches the caller with the flag on and is dropped with it off.
 
@@ -136,5 +136,35 @@ fn projection_onto_plane_passes_on_a_failed_box() {
             })
         );
         assert_eq!(box_error, pass_on, "{r:?}");
+    }
+}
+
+/// fork e7ebc8d (`SmStitch::UnifyNormals`, `SER(pBrepToOrient->CalculateBoundingBox(sBrepBBox))`):
+/// a face without surface has no box. Upstream builds the edge tree from an empty box
+/// and unifies the faces it reaches; the fork returns the box's error.
+#[test]
+fn unify_normals_passes_on_a_failed_box() {
+    for pass_on in [false, true] {
+        let mut k = kernel(pass_on);
+        let mut b = unit_box(&mut k);
+        let start = b.face_list()[0];
+        let f = b.face_list()[1];
+        b.face_mut(f).expect("face").surface = None;
+        let r =
+            solidcore::heal::stitch::p1::api_unify_normals(&mut k, Some(&mut b), Some(start), 4);
+        if pass_on {
+            assert!(
+                matches!(
+                    r,
+                    Err(SolidError::InvalidInput {
+                        operation: "query::face::p1::calculate_bounding_box",
+                        ..
+                    })
+                ),
+                "{r:?}"
+            );
+        } else {
+            assert!(r.is_ok(), "{r:?}");
+        }
     }
 }
