@@ -612,6 +612,10 @@ pub struct SurfaceIntersector<'s> {
     /// `DoIntersection` (`u64::MAX` outside it: no bound); see
     /// [`MAX_START_LOOP_TRACE_STEPS`](super::p4::MAX_START_LOOP_TRACE_STEPS).
     pub trace_steps_left: u64,
+    /// Not upstream: the bound `set_trace_budget` starts a start-point loop with,
+    /// [`MAX_START_LOOP_TRACE_STEPS`](super::p4::MAX_START_LOOP_TRACE_STEPS) (lowered by
+    /// tests only).
+    pub(crate) start_loop_trace_steps: u64,
     /// Not upstream: a `trace_step` call was refused because `trace_steps_left` ran out.
     pub trace_budget_refused: bool,
     /// `m_bCheckForInteriorCurves` (no longer used upstream).
@@ -737,6 +741,7 @@ impl<'s> SurfaceIntersector<'s> {
             doing_extension_clipping: false,
             curve_is_closed: false,
             trace_steps_left: u64::MAX,
+            start_loop_trace_steps: super::p4::MAX_START_LOOP_TRACE_STEPS,
             trace_budget_refused: false,
             check_for_interior_curves: true,
             doing_self_intersection: core::ptr::eq(surface1, surface2),

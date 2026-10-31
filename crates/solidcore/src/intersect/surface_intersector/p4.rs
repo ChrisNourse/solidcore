@@ -429,11 +429,11 @@ fn too_many(op: &'static str) -> SolidError {
 impl SurfaceIntersector<'_> {
     // ---- tracing -----------------------------------------------------------------------
 
-    /// Not upstream: starts the [`MAX_START_LOOP_TRACE_STEPS`] bound of a start-point
-    /// loop (`bounded`) or lifts it.
+    /// Not upstream: starts the [`MAX_START_LOOP_TRACE_STEPS`] bound (the
+    /// `start_loop_trace_steps` field) of a start-point loop (`bounded`) or lifts it.
     pub(super) fn set_trace_budget(&mut self, bounded: bool) {
         self.trace_steps_left = if bounded {
-            MAX_START_LOOP_TRACE_STEPS
+            self.start_loop_trace_steps
         } else {
             u64::MAX
         };

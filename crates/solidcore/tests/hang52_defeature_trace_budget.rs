@@ -3,7 +3,8 @@
 //! the start-point loop of the extended surface's intersection traces 40+ start points,
 //! each creeping toward a surface boundary for ~15,000 steps. With
 //! `fixes.ssi_start_loop_trace_budget` the loop's trace steps are bounded together, and
-//! the call returns the same open body in under a minute.
+//! the call returns in under a minute. Its assertions do not show the bound fired: the
+//! default run returns the same face and edge counts.
 #![allow(clippy::unwrap_used)]
 
 use solidcore::blend::feature_executive::{FeatureExecutive, RebuildBrepType};
@@ -13,9 +14,12 @@ use solidcore::primitive::api_primitives::create_box;
 use solidcore::topology::brep::p1;
 use solidcore::Kernel;
 
-// Release: under a minute; a dev build: 27 min, too slow for `cargo test`. The
-// trace-level regression is `trace_steps_are_bounded_by_the_start_point_loop_budget` in
-// `intersect/surface_intersector/p4.rs`. Run this with `--release -- --ignored`.
+// Release: under a minute; a dev build: 27 min, too slow for `cargo test`. Only its
+// running time tells the bound fired. The regression of the wiring is
+// `do_intersection_bounds_its_start_point_loop_traces_when_opted_in` in
+// `intersect/surface_intersector/p5.rs` (the step itself:
+// `trace_steps_are_bounded_by_the_start_point_loop_budget` in `p4.rs`). Run this with
+// `--release -- --ignored`.
 #[test]
 #[ignore = "under a minute in release, 27 min in a dev build"]
 fn opted_in_defeature_of_a_filleted_box_face_returns_the_same_body() {

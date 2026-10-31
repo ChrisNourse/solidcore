@@ -874,8 +874,12 @@ fn evaluate_1st_derivatives(
 mod tests {
     use super::*;
     use crate::error::SM_ERR_NULL_POINTER;
+    use crate::geom::axis2_placement::Axis2Placement;
     use crate::intersect::adv_surface_intersector::NoSurfaceHandle;
+    use crate::intersect::surface_intersector::p4::MAX_START_LOOP_TRACE_STEPS;
+    use crate::nurbs::b_spline_surface::BSplineSurface;
     use crate::surface::plane::Plane;
+    use crate::surface::sphere::Sphere;
 
     fn plane(o: [f64; 3], x: [f64; 3], y: [f64; 3]) -> Surface {
         Surface::from(Plane::new(
@@ -967,5 +971,55 @@ mod tests {
         // the tolerances are set first
         assert_eq!(ssi.base.this_approx_tol_3d, 0.5);
         assert_eq!(ssi.base.this_ang_tol_rad, 0.1);
+    }
+
+    /// [`do_intersection`] of a unit sphere with the plane z = 0.5 (the surfaces of
+    /// `tangent_tracer`'s tests), the start-point loop bounded to `steps` trace steps.
+    fn sphere_cut_with_trace_steps(k: &Kernel, steps: u64) -> Result<SurfaceIntersection> {
+        let sphere =
+            Surface::from(Sphere::create_canonical(k, &Axis2Placement::default(), 1.0).unwrap());
+        let plane = Surface::from(
+            BSplineSurface::create_bilinear_surface(
+                Vec3::new(-1.0, -1.0, 0.5),
+                Vec3::new(1.0, -1.0, 0.5),
+                Vec3::new(-1.0, 1.0, 0.5),
+                Vec3::new(1.0, 1.0, 0.5),
+            )
+            .unwrap(),
+        );
+        let d1 = sphere.natural_uv_domain_with_nurb(k).unwrap();
+        let d2 = plane.natural_uv_domain_with_nurb(k).unwrap();
+        // as `do_intersection`, with the bound lowered
+        let mut caches: Vec<SurfaceCache<IntersectionSurface>>;
+        let mut ssi: AdvSurfaceIntersector<'_, '_, IntersectionSurface> =
+            AdvSurfaceIntersector::new(k, &sphere, &d1, &plane, &d2, false).unwrap();
+        ssi.base.start_loop_trace_steps = steps;
+        caches = intersection_surface_caches(
+            k,
+            &ssi.base,
+            [IntersectionSurface::First, IntersectionSurface::Second],
+        )
+        .unwrap();
+        ssi.do_intersection_with_caches(k, &mut caches, None, None)
+    }
+
+    /// HANG-52 through `DoIntersection`: the start-point loop's traces are bounded only
+    /// with `fixes.ssi_start_loop_trace_budget`, the bound's refusal fails the
+    /// intersection with the too-many error, and the real bound changes no curve.
+    #[test]
+    fn do_intersection_bounds_its_start_point_loop_traces_when_opted_in() {
+        let mut k = Kernel::default();
+        let off = sphere_cut_with_trace_steps(&k, 1).unwrap();
+        assert!(!off.curves_3d.is_empty());
+
+        k.fixes.ssi_start_loop_trace_budget = true;
+        assert!(matches!(
+            sphere_cut_with_trace_steps(&k, 1),
+            Err(SolidError::InvalidInput { .. })
+        ));
+        let on = sphere_cut_with_trace_steps(&k, MAX_START_LOOP_TRACE_STEPS).unwrap();
+        assert_eq!(on.curves_3d.len(), off.curves_3d.len());
+        assert_eq!(on.curve_types, off.curve_types);
+        assert_eq!(on.deviations, off.deviations);
     }
 }
