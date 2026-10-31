@@ -110,11 +110,11 @@ use crate::topology::{Brep, EdgeId, EdgeuseId, FaceId, ObjectHandle};
 
 const OP: &str = "topology::edgeuse::p3";
 
-/// `SM_SUCCESS` (`SmMessages.h`).
-const SM_SUCCESS: i32 = crate::intersect::surface_drop_lib::p1::SM_SUCCESS;
+// `SM_SUCCESS` (`SmMessages.h`).
+use crate::error::SM_SUCCESS;
 
-/// `SM_ERR_UNKNOWN`.
-const SM_ERR_UNKNOWN: i32 = crate::surface::surface::p2::SM_ERR_UNKNOWN;
+// `SM_ERR_UNKNOWN`.
+use crate::error::SM_ERR_UNKNOWN;
 
 /// `UNSURE` of `SmBoolean`.
 const UNSURE: i32 = crate::surface::surface::p2::UNSURE;
