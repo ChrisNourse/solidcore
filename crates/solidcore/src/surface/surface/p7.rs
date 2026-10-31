@@ -66,8 +66,14 @@
 //!   bit instead, WR-384); `SmSSGlobalSolver::BranchMayContainAnswers` returns
 //!   `SM_SUCCESS` (that is, `FALSE`) for a node outside its face and `NER`'s status
 //!   (non-zero: `TRUE`) for a missing patch; `sm_GoodDropResult` compares the guess and
-//!   result distances with swapped names; `FindDegenParamForDirection` compares a
-//!   sample fraction with the parameter `dS`.
+//!   result distances with swapped names (the opt-in
+//!   `Kernel::fixes.good_drop_result_distances_in_order` compares them the right way round,
+//!   WR-56); `FindDegenParamForDirection` compares a sample fraction with the parameter
+//!   `dS`.
+//! - **Projection curve class.** `CreateParallelProjectionCurves` takes a [`Curve`] for
+//!   upstream's `const SmBSplineCurve&`; a curve outside the `SmBSplineCurve` classes
+//!   (B-spline, line, ellipse, hyperbola, parabola), which upstream's type rules out,
+//!   is `SM_ERR_INVALID_INPUT` before the sweep.
 //! - **`GlobalPointSolve_0`** takes the kernel and the surface's handle `surface: O`
 //!   (the cache's owner object and the solutions' object), as `GlobalLineIntersect`
 //!   does; it and `SmSPGlobalSolver::BranchMayContainAnswers` (which reads the cache
@@ -84,8 +90,8 @@
 //!   (`surface.surface_p1`; the solver constructors also hand over the caches holding
 //!   the patch data of tree nodes).
 
-use crate::curve::curve::Curve;
-use crate::error::{ignored, Result, SolidError};
+use crate::curve::curve::{Curve, CurveKind};
+use crate::error::{ignore_status, ignored, Result, SolidError};
 use crate::geom::extent1d::Extent1d;
 use crate::geom::extent1d::ExtentNd;
 use crate::geom::extent2d::Extent2d;
@@ -235,8 +241,7 @@ pub fn base_evaluate_normal<S: SurfaceEvaluate + ?Sized>(
         }
     }
 
-    // (a generic `SurfaceEvaluate` receiver: the trait has no kernel)
-    let uv_domain = surface.natural_uv_domain_if_built();
+    let uv_domain = surface.natural_uv_domain_with_nurb(k)?;
     let mut step = 1.0e-8;
 
     // First check for the parallel-derivatives case (the lengths of the
@@ -926,6 +931,9 @@ impl Surface {
             return Ok(None);
         }
         // UNPORTED(topology.face_p4): SmFace::GetBrep
+        // Proof (unreachable): no library caller; a surface's owner is an `ObjectRef`
+        // key, which cannot reach the face's arena. Code holding the face holds its
+        // `Brep` (the arena is the B-rep), so it never asks the surface.
         Err(SolidError::unported("SmFace::GetBrep", "topology.face_p4"))
     }
 
@@ -1696,19 +1704,22 @@ impl Surface {
     /// between the curve's and the surface's boxes, the sweep then moved back by half
     /// to run both ways), through `SmAdvSurfaceIntersector::DoIntersection`. Returns
     /// the 3D curves and their UV curves on this surface (`None` for a `NULL` entry).
-    /// The surface and curve continuity checks only report.
+    /// The surface and curve continuity checks only report. `curve` is one of the
+    /// `SmBSplineCurve` classes (B-spline, line, ellipse, hyperbola, parabola): its
+    /// continuities, box and natural interval dispatch as upstream's virtuals, and the
+    /// sweep uses its NURB.
     ///
     /// # Errors
     ///
-    /// `SM_ERR_INVALID_INPUT` for a zero projection vector; `SM_ERR_NULL_POINTER`
-    /// without a surface cache; those of the continuities, the boxes, the sweep, its
-    /// move and the intersection; [`SolidError::Unported`] from unported callees of the
-    /// surface cache and the intersector.
+    /// `SM_ERR_INVALID_INPUT` for a zero projection vector or a curve of another class;
+    /// `SM_ERR_NULL_POINTER` without a surface cache; those of the continuities, the
+    /// boxes, the sweep, its move and the intersection; [`SolidError::Unported`] from
+    /// unported callees of the surface cache and the intersector.
     pub fn create_parallel_projection_curves(
         &self,
         k: &Kernel,
         uv_domain: &Extent2d,
-        curve: &BSplineCurve,
+        curve: &Curve,
         projection_vector: Vec3,
         opt_projection_distance: Option<f64>,
         opt_approx_tol_3d: Option<f64>,
@@ -1740,7 +1751,7 @@ impl Surface {
         &self,
         k: &Kernel,
         uv_domain: &Extent2d,
-        curve: &BSplineCurve,
+        curve: &Curve,
         projection_vector: Vec3,
         opt_projection_distance: Option<f64>,
         opt_approx_tol_3d: Option<f64>,
@@ -1765,7 +1776,7 @@ impl Surface {
         &self,
         k: &Kernel,
         uv_domain: &Extent2d,
-        curve: &BSplineCurve,
+        curve: &Curve,
         projection_vector: Vec3,
         opt_projection_distance: Option<f64>,
         opt_approx_tol_3d: Option<f64>,
@@ -1818,7 +1829,7 @@ impl Surface {
                 polar: false,
             };
             let curve_box = curve
-                .calculate_bounding_box(&curve.natural_interval(), req)?
+                .calculate_bounding_box(k, &curve.natural_interval(), req, true)?
                 .normal
                 .unwrap_or_default();
             4.0 * curve_box.max_distance(&surf_box)
@@ -1827,8 +1838,32 @@ impl Surface {
         // sweep vector
         let sweep_vec = projection_vector.unitize()? * projection_distance;
 
-        // swept surface
-        let mut sweep_curve = curve.clone();
+        // swept surface (`const SmBSplineCurve&`: the class's NURB)
+        // (the analytic classes' own NURB, swept exactly with no knot fix-up; when it is
+        // missing, their virtual MakeNurb makes it on a copy)
+        let mut sweep_curve: BSplineCurve = match curve.kind() {
+            CurveKind::BSpline(c) => c.clone_exact(),
+            CurveKind::Line(c) => c.base_with_nurb()?.clone_exact(),
+            CurveKind::Ellipse(c) if c.base().gw_nurb().is_some() => c.base().clone_exact(),
+            CurveKind::Ellipse(c) => {
+                let mut c = c.clone();
+                ignore_status(c.make_nurb(k))?;
+                c.base().clone_exact()
+            }
+            CurveKind::Hyperbola(c) if c.base().gw_nurb().is_some() => c.base().clone_exact(),
+            CurveKind::Hyperbola(c) => {
+                let mut c = c.clone();
+                ignore_status(c.make_nurb(None))?;
+                c.base().clone_exact()
+            }
+            CurveKind::Parabola(c) if c.base().gw_nurb().is_some() => c.base().clone_exact(),
+            CurveKind::Parabola(c) => {
+                let mut c = c.clone();
+                ignore_status(c.make_nurb(None))?;
+                c.base().clone_exact()
+            }
+            _ => return Err(SolidError::invalid_input(OP_PROJ, "not an SmBSplineCurve")),
+        };
         let mut projection_surface = Surface::from(BSplineSurface::create_linear_sweep(
             &mut sweep_curve,
             sweep_vec,
@@ -2064,7 +2099,8 @@ pub struct HigherOrderDerivs {
 ///
 /// # Errors
 ///
-/// Those of `Evaluate1stDerivatives`.
+/// Those of `Evaluate1stDerivatives` and of the natural domain (a lazy analytic
+/// surface makes its NURB first).
 pub fn compute_higher_order_derivs<S: SurfaceEvaluate + ?Sized>(
     k: &Kernel,
     surface: &S,
@@ -2074,8 +2110,7 @@ pub fn compute_higher_order_derivs<S: SurfaceEvaluate + ?Sized>(
     want_g4: bool,
 ) -> Result<HigherOrderDerivs> {
     // locals
-    // (a generic `SurfaceEvaluate` receiver: the trait has no kernel)
-    let domain = surface.natural_uv_domain_if_built();
+    let domain = surface.natural_uv_domain_with_nurb(k)?;
 
     // finite difference step - watch for stepping out of surface boundaries
     let mut step = EFF_ZERO_SQRT / 1000.0; // 1.0e-9
@@ -2138,7 +2173,8 @@ pub fn compute_higher_order_derivs<S: SurfaceEvaluate + ?Sized>(
 ///
 /// # Errors
 ///
-/// Those of `Evaluate1stDerivatives`; the status of `Unitize` for a zero result.
+/// Those of `Evaluate1stDerivatives` and of the natural domain (a lazy analytic
+/// surface makes its NURB first); the status of `Unitize` for a zero result.
 pub fn compute_inward_vector<S: SurfaceEvaluate + ?Sized>(
     k: &Kernel,
     surface: &S,
@@ -2148,8 +2184,7 @@ pub fn compute_inward_vector<S: SurfaceEvaluate + ?Sized>(
     let (_, du, dv) = evaluate_1st_derivatives(k, surface, uv, Side::Left, Side::Left)?;
 
     // towards midPoint UV vec
-    // (a generic `SurfaceEvaluate` receiver: the trait has no kernel)
-    let mid_uv = surface.natural_uv_domain_if_built().evaluate(0.5, 0.5);
+    let mid_uv = surface.natural_uv_domain_with_nurb(k)?.evaluate(0.5, 0.5);
     let dir_uv = mid_uv - uv;
     let dir_uv = dir_uv.unitize().unwrap_or(dir_uv);
 
@@ -2595,6 +2630,11 @@ pub fn check_seam_drop<S: SurfaceEvaluate + ?Sized>(
 /// Whether a local point drop from `guess_uv` (solution value `sol_value` at
 /// `sol_uv`) converged well enough to skip the global solve (`sm_GoodDropResult`).
 ///
+/// Its last test, meant to refuse a result farther from the point than the guess,
+/// measures the two distances the wrong way round, as upstream; with
+/// `Kernel::fixes.good_drop_result_distances_in_order` (WR-56, the fork's
+/// tangency-labs/smlib@0b4de8c) it measures them the right way.
+///
 /// # Errors
 ///
 /// Only [`SolidError::Unported`] (upstream ignores the evaluation statuses).
@@ -2668,8 +2708,18 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
     if let Some(p) = ignored(surface.evaluate_point(k, guess_uv))? {
         guess_3d = p;
     }
-    let dsq_guess = pt_to_drop.distance_squared(srf_point);
-    let dsq_result = pt_to_drop.distance_squared(guess_3d);
+    let (dsq_guess, dsq_result) = if k.fixes.good_drop_result_distances_in_order {
+        // Not upstream (WR-56; tangency-labs/smlib@0b4de8c): each distance to its own point
+        (
+            pt_to_drop.distance_squared(guess_3d),
+            pt_to_drop.distance_squared(srf_point),
+        )
+    } else {
+        (
+            pt_to_drop.distance_squared(srf_point),
+            pt_to_drop.distance_squared(guess_3d),
+        )
+    };
     if dsq_result > dsq_guess {
         return Ok(false);
     }
@@ -2950,6 +3000,7 @@ fn singular_param_solve(
         EFF_ZERO,
     );
     let mut ls = crate::geom::local_solve1d::LocalSolve1d::with_interval(*ivl, false);
+    ls.set_failed_guess_no_sign_change(k.fixes.oscillating_skips_failed_guesses);
     let r = ls.solve_it(&mut efo, start, tol)?;
     Ok((r.found, r.t))
 }
@@ -3027,6 +3078,135 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             Vec3::new(0.0, 0.0, 1.0),
         ))
+    }
+
+    #[test]
+    fn flat_corner_points_preserve_each_mask_bit() {
+        use crate::nurbs::math::{CPoint, NOW};
+
+        let mut k = Kernel::default();
+        k.fixes.flat_corners_test_bits = true;
+        // Only the lower/lower corner has nonzero parallel tangents. Reverse
+        // either control-net direction to exercise each of the four bits.
+        for reverse_u in [false, true] {
+            for reverse_v in [false, true] {
+                let mut net = vec![
+                    vec![
+                        CPoint::new(0.0, 0.0, 0.0, NOW),
+                        CPoint::new(1.0, 0.0, 0.0, NOW),
+                    ],
+                    vec![
+                        CPoint::new(2.0, 0.0, 0.0, NOW),
+                        CPoint::new(1.0, 1.0, 0.0, NOW),
+                    ],
+                ];
+                if reverse_u {
+                    net.reverse();
+                }
+                if reverse_v {
+                    for row in &mut net {
+                        row.reverse();
+                    }
+                }
+                let knots = [0.0, 0.0, 1.0, 1.0];
+                let s = Surface::from(
+                    BSplineSurface::from_data(1, 1, 1, 1, 3, 3, &net, &knots, &knots).unwrap(),
+                );
+                let index = usize::from(reverse_u) * 2 + usize::from(reverse_v);
+                let flags = 1 << index;
+                assert_eq!(s.flat_corners(&k, 1e-8, false).unwrap().flags, flags);
+                let result = s.flat_corners(&k, 1e-8, true).unwrap();
+                assert_eq!(result.flags, flags);
+                for (i, point) in result.points.unwrap().iter().enumerate() {
+                    assert_eq!(*point, if i == index { Vec3::ZERO } else { Vec3::UNDEF });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flat_corner_points_preserve_multiple_bits_and_regular_corners() {
+        use crate::nurbs::math::{CPoint, NOW};
+        let mut k = Kernel::default();
+        k.fixes.flat_corners_test_bits = true;
+        let net = vec![
+            vec![
+                CPoint::new(0.0, 0.0, 0.0, NOW),
+                CPoint::new(2.0, 0.0, 0.0, NOW),
+            ],
+            vec![
+                CPoint::new(1.0, 0.0, 0.0, NOW),
+                CPoint::new(3.0, 0.0, 0.0, NOW),
+            ],
+        ];
+        let knots = [0.0, 0.0, 1.0, 1.0];
+        let s = Surface::from(
+            BSplineSurface::from_data(1, 1, 1, 1, 3, 3, &net, &knots, &knots).unwrap(),
+        );
+        assert_eq!(s.flat_corners(&k, 1e-8, false).unwrap().flags, 15);
+        let result = s.flat_corners(&k, 1e-8, true).unwrap();
+        assert_eq!(result.flags, 15);
+        assert_eq!(
+            result.points.unwrap(),
+            [
+                Vec3::ZERO,
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(3.0, 0.0, 0.0)
+            ]
+        );
+        assert_eq!(
+            plane().flat_corners(&k, 1e-8, true).unwrap(),
+            FlatCorners {
+                flags: 0,
+                points: Some([Vec3::UNDEF; 4])
+            }
+        );
+    }
+
+    /// WR-56 (#1852; the fork's tangency-labs/smlib@0b4de8c): the flat patch
+    /// (10 u, 10 v, 0) and the point (5, 5, 1), whose foot is (0.5, 0.5). A local result
+    /// 5e-4 along the patch from the foot passes every test before the last (the gap
+    /// along the patch is between 1e-4 and 1e-3); the last should take it when its guess
+    /// is farther from the point and refuse it when its guess is the foot itself.
+    #[test]
+    fn wr_56_good_drop_result_compares_the_right_distances() {
+        use crate::nurbs::math::{CPoint, NOW};
+
+        let net = vec![
+            vec![
+                CPoint::new(0.0, 0.0, 0.0, NOW),
+                CPoint::new(0.0, 10.0, 0.0, NOW),
+            ],
+            vec![
+                CPoint::new(10.0, 0.0, 0.0, NOW),
+                CPoint::new(10.0, 10.0, 0.0, NOW),
+            ],
+        ];
+        let knots = [0.0, 0.0, 1.0, 1.0];
+        let s = Surface::from(
+            BSplineSurface::from_data(1, 1, 1, 1, 3, 3, &net, &knots, &knots).unwrap(),
+        );
+        let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
+        let point = Point3::new(5.0, 5.0, 1.0);
+        let mut sol = SolutionEnd::new();
+        sol.solution_value = 1.0;
+        sol.parameters[0] = 0.500_05;
+        sol.parameters[1] = 0.5;
+        // the result is nearer the point than the guess (0.3, 0.5), farther than the
+        // guess (0.5, 0.5)
+        let nearer_guess = Point2::new(0.3, 0.5);
+        let foot_guess = Point2::new(0.5, 0.5);
+        let mut k = Kernel::default();
+        let good = |k: &Kernel, guess: Point2| {
+            good_drop_result(k, &s, &domain, point, guess, &sol).unwrap()
+        };
+        // upstream: the nearer result is refused, the farther one taken
+        assert!(!good(&k, nearer_guess));
+        assert!(good(&k, foot_guess));
+        k.fixes.good_drop_result_distances_in_order = true;
+        assert!(good(&k, nearer_guess));
+        assert!(!good(&k, foot_guess));
     }
 
     #[test]
