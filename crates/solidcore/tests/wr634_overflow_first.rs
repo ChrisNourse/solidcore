@@ -178,7 +178,7 @@ fn hooks_off_or_without_the_flags_change_nothing() {
     assert!(r.overflow.is_empty());
 }
 
-/// The fork's end-to-end case (capi ops_kernel overflow_goes_first), its ordering
+/// The fork's end-to-end case (the C API test `ops_kernel` `overflow_goes_first`), its ordering
 /// emulated with the hooks: classify each edge alone, blend those that overflow on their
 /// own first, then what is left of the others. The R21 takes the whole of both faces the
 /// R5 edges lie on, so they are gone and the result is the R21's alone.
