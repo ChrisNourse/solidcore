@@ -13,4 +13,4 @@ Updates: WR-88
   - `wr88_non_unit_domain_and_gap_evaluation`: checks end-to-end 3D surface point evaluation and gap distances on a non-B-spline patch with a height slope along V, confirming that default evaluates extrapolated space (`z = 30.0`, gap ~30.17) while opt-in evaluates within domain (`z <= 10.0`, max gap ~10.10).
 - **Native evidence:** the default behavior is verified against the pinned C++ reference by the existing difftest fixture `srf_pt_curve_bounded_v_stride` (`fixtures/heal.gap/upstream.json`, `cu = 5, cv = 4`), which passes with `max_rel_err = 0`. The opt-in fix is verified against independent mathematical expectations.
 - **Scope:** WR-88 only. WR-89 (`gap_samples_use_trimmed_spans`) and WR-90 (`GapArray::append` maximum-index tracking) remain independent.
-- **Tracking:** WR-88 is a file record; GitHub issue #88 is unrelated.
+- **Tracking:** tangency-labs/solidcore#2063. WR-88 is a file record; GitHub issue #88 is unrelated.
