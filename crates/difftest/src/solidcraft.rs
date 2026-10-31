@@ -1469,6 +1469,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
         "fillet_rail_end_on_continued_surface" => &mut k.fixes.fillet_rail_end_on_continued_surface,
         "fillet_cliff_overflow" => &mut k.fixes.fillet_cliff_overflow,
+        "offset_extension_as_itself" => &mut k.fixes.offset_extension_as_itself,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
@@ -1477,7 +1478,13 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
 
 /// Runs `case` on solidcore.
 pub fn run_rust(case: &Case) -> Run {
-    let mut k = Kernel::default();
+    run_rust_on(Kernel::default(), case)
+}
+
+/// Runs `case` on `k` (its `fixes` already set; the case's own `fixes` are turned on
+/// after them), for drivers that pick the kernel's fixes themselves (the
+/// `solidcraft_bench` example).
+pub fn run_rust_on(mut k: Kernel, case: &Case) -> Run {
     for fix in &case.fixes {
         if let Err(msg) = enable_fix(&mut k, fix) {
             return Run::Error(msg);
