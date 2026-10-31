@@ -41,6 +41,14 @@
 //! the change is reverted, so the copies evaluate as the shared object does.
 //! This foundation supports solver construction/loading; it does not substitute a
 //! result for the remaining fillet execution stages. No recursion.
+//! Attributes (issue #1462): upstream they live on the bodies' objects; here
+//! [`FilletSession::with_second_base`] moves the target's (and second base's) own
+//! attributes ([`Brep::add_attribute`]) into the session store under the bodies' issued
+//! identities, after the executive's `m_pAttributeE`, and dropping the session
+//! (`~SmFilletExecutive`: `m_pAttributeE` leaves its users and is deleted) hands each
+//! body the lists of its live objects back. While the session lives the bodies' own
+//! stores are empty. `take_fillet_brep` gives the fillet B-rep its objects' attributes
+//! less `m_pAttributeE`.
 
 pub mod insertion;
 
@@ -90,11 +98,13 @@ mod classification;
 mod concave_nxn;
 mod corner_marks;
 mod crossing_rails;
+mod ease;
 pub(crate) mod finish;
 mod original_merge;
 mod original_trim;
 mod piecewise;
 mod surface;
+mod trace_reach;
 pub use original_trim::{OriginalSurfaceDeletion, OriginalSurfaceSelection};
 
 const OP: &str = "blend::fillet_executive::session";
@@ -265,6 +275,9 @@ struct SessionObjects<'target> {
     generators: Vec<FilletSurfaceGenerator>,
     laws: Vec<FilletLaw>,
     attributes: AttributeStore,
+    /// (not upstream) The target's and the second base's own attribute stores as the
+    /// session took them, put back by `Drop` if handing the session's back fails.
+    attributes_before: (AttributeStore, AttributeStore),
     merge_attributes: Option<Vec<AttributeHandle>>,
     /// WR-459: the target's edges and faces before filleting, kept by the clean-up.
     cleanup_kept: Option<(BTreeSet<EdgeId>, BTreeSet<FaceId>)>,
@@ -1094,6 +1107,61 @@ pub struct FilletSession<'target> {
     objects: SessionObjects<'target>,
 }
 
+/// (not upstream) Copies `body`'s own attributes ([`Brep::add_attribute`]) into the
+/// session store under the body's issued identities (`serial`). The body keeps its
+/// store: the caller empties it only once every body is seeded, so a failed seed leaves
+/// each body's attributes where they were.
+fn seed_body_attributes(attributes: &mut AttributeStore, body: &Brep, serial: u64) -> Result<()> {
+    attributes.absorb(body.attribute_store().clone(), &|key| {
+        crate::topology::loopuse::entity_of_notify_key(key)
+            .map(|e| crate::topology::brep::p3::topology_ref(serial, e).key)
+            .ok_or_else(|| invalid("attribute list names no object"))
+    })
+}
+
+/// (not upstream) The session store's attributes of the live objects of `body`
+/// (issued `serial`), keyed by the body's own identities; the lists of every other
+/// object are cleared, as upstream's object destructor does.
+fn body_attributes(
+    attributes: &AttributeStore,
+    body: &Brep,
+    serial: u64,
+) -> Result<AttributeStore> {
+    let mut store = attributes.clone();
+    store.retain_rekeyed(&|key| {
+        crate::topology::brep::p3::topology_entity(serial, key)
+            .filter(|&e| body.is_live_entity(e))
+            .map(|e| crate::topology::loopuse::notify_ref(e).key)
+    })?;
+    // Only this body's attributes: those no object of it lists (the other body's, the
+    // session's own) are not carried into its store.
+    store.retain_listed();
+    Ok(store)
+}
+
+/// `~SmFilletExecutive`: `m_pAttributeE` leaves each of its users and is deleted.
+/// (not upstream) Then the bodies get their attributes back from the session store.
+impl Drop for FilletSession<'_> {
+    fn drop(&mut self) {
+        if let Some(FilletObject::Attribute(handle)) = self.executive.edge_attribute {
+            // a handle the session allocated; nothing to report from a destructor
+            let _ = self.objects.attributes.destroy(handle);
+        }
+        let objects = &mut self.objects;
+        let (target_before, second_before) = core::mem::take(&mut objects.attributes_before);
+        // (a hand-back that fails puts the body's store from before the session back,
+        // rather than leaving it empty)
+        let store = body_attributes(&objects.attributes, objects.target, objects.target_serial)
+            .unwrap_or(target_before);
+        objects.target.set_attributes(store);
+        if let Some(second) = &mut objects.second_base {
+            let store = body_attributes(&objects.attributes, second.body, second.serial)
+                .unwrap_or(second_before);
+            second.body.set_attributes(store);
+        }
+    }
+}
+
 impl<'target> FilletSession<'target> {
     /// Construct the native executive-owned objects, with its ordinary defaults.
     ///
@@ -1116,7 +1184,7 @@ impl<'target> FilletSession<'target> {
         second_base: Option<&'target mut Brep>,
     ) -> Result<Self> {
         let target_serial = crate::topology::brep::p3::notify_serial(&mut k.context, target)?;
-        let second_base = match second_base {
+        let mut second_base = match second_base {
             Some(body) => Some(SecondBase {
                 serial: crate::topology::brep::p3::notify_serial(&mut k.context, body)?,
                 body,
@@ -1137,6 +1205,21 @@ impl<'target> FilletSession<'target> {
             ids::ALL_FILLET_EDGES,
             Behavior::StandaloneReference,
         ))?;
+        // (not upstream: upstream the attributes stay on the bodies' objects.) The
+        // session's store holds the bodies' own attributes under its identities while it
+        // runs, after the executive's own; `Drop` hands them back.
+        seed_body_attributes(&mut attributes, target, target_serial)?;
+        if let Some(second) = &second_base {
+            seed_body_attributes(&mut attributes, &*second.body, second.serial)?;
+        }
+        // Every seed succeeded: only now do the bodies' own stores move to the session.
+        let attributes_before = (
+            target.take_attributes(),
+            second_base
+                .as_mut()
+                .map(|second| second.body.take_attributes())
+                .unwrap_or_default(),
+        );
         let executive = FilletExecutive::new(
             Some(FilletObject::Body(FilletBody::Target)),
             ExecutiveObjects {
@@ -1159,6 +1242,7 @@ impl<'target> FilletSession<'target> {
                 generators: Vec::new(),
                 laws: Vec::new(),
                 attributes,
+                attributes_before,
                 merge_attributes: None,
                 cleanup_kept: None,
                 extended_surfaces: BTreeMap::new(),
@@ -1981,6 +2065,24 @@ impl<'target> FilletSession<'target> {
         Ok(())
     }
 
+    /// `SmFilletCorner::SetEaseDist` on one live corner (the fork's, tangency-labs/smlib
+    /// `e74bbd3`, #1376): over `distance` along each edge before the corner's setback, each
+    /// round's cross-section eases from its own into the curvature-continuous one, and the
+    /// corner's rail-rail curves meet the rails curvature-continuously. `0.0` (the default)
+    /// is none, the pinned behaviour; it acts only with a setback
+    /// ([`Self::set_corner_setback`]).
+    ///
+    /// # Errors
+    /// An unresolved corner identity.
+    pub fn set_corner_ease(&mut self, id: FilletCornerId, distance: f64) -> Result<()> {
+        self.objects
+            .corners
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| invalid("corner is not live in this session"))?
+            .ease_dist = distance;
+        Ok(())
+    }
+
     /// `SmFilletCorner::SetBevel` on one live corner.
     ///
     /// # Errors
@@ -2481,6 +2583,22 @@ impl BrepCreationAccess<FilletObject> for SessionObjects<'_> {
             k,
             self.target,
         )
+    }
+
+    fn creation_extend_trace_to_its_rails(
+        &mut self,
+        k: &mut Kernel,
+        solver: FilletObject,
+    ) -> Result<()> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        let current = self
+            .solvers
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| invalid("solver is not live in this session"))?;
+        trace_reach::extend_trace_to_its_rails(k, self.target, current)
     }
 }
 
@@ -3364,6 +3482,13 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             }
         }
         Ok(true)
+    }
+    fn geometry_ease_set_back_sections(
+        &mut self,
+        k: &mut Kernel,
+        corners: &[FilletObject],
+    ) -> Result<()> {
+        self.ease_set_back_sections(k, corners)
     }
     fn geometry_bands_clear_other_rails(
         &mut self,
@@ -4705,5 +4830,107 @@ mod tests {
                 assert_eq!((error.vertex, error.location), (None, None));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod attribute_seed_tests {
+    use super::*;
+    use crate::geom::attribute::ObjectKey;
+    use crate::math::Point3;
+    use crate::primitive::api_primitives::create_box;
+
+    /// A second base whose seed fails (an attribute list naming no object) fails the
+    /// session's construction and leaves both bodies' attributes where they were: the
+    /// target's were not taken before every seed succeeded.
+    #[test]
+    fn failed_seed_leaves_both_bodies_attributes() {
+        let mut k = Kernel::default();
+        let mut target = create_box(&mut k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
+        let face = crate::topology::brep::p1::faces(&target, None)
+            .unwrap()
+            .first()
+            .copied()
+            .unwrap();
+        target
+            .add_attribute(
+                EntityRef::Face(face),
+                Attribute::long(10_007, 7, Behavior::Copy),
+            )
+            .unwrap();
+        let mut second = create_box(&mut k, Point3::new(5.0, 0.0, 0.0), 1.0, 1.0, 1.0).unwrap();
+        let mut store = AttributeStore::new();
+        let handle = store
+            .insert(Attribute::long(10_008, 8, Behavior::Copy))
+            .unwrap();
+        // key 0 names no object (`loopuse::entity_of_notify_key`)
+        store.add_attribute(ObjectKey(0), handle).unwrap();
+        second.set_attributes(store);
+        let target_before = target.attribute_store().clone();
+        let second_before = second.attribute_store().clone();
+
+        assert!(FilletSession::with_second_base(&mut k, &mut target, Some(&mut second)).is_err());
+        assert_eq!(target.attribute_store(), &target_before);
+        assert_eq!(second.attribute_store(), &second_before);
+        assert_eq!(target.entity_attributes(EntityRef::Face(face)).len(), 1);
+    }
+
+    /// A hand-back that fails (the session store lists an attribute that was deleted,
+    /// so `body_attributes` errors) puts each body's store from before the session
+    /// back, rather than leaving the bodies with no attributes.
+    #[test]
+    fn failed_hand_back_restores_both_bodies_attributes() {
+        let mut k = Kernel::default();
+        let mut target = create_box(&mut k, Point3::ZERO, 1.0, 1.0, 1.0).unwrap();
+        let face = crate::topology::brep::p1::faces(&target, None)
+            .unwrap()
+            .first()
+            .copied()
+            .unwrap();
+        target
+            .add_attribute(
+                EntityRef::Face(face),
+                Attribute::long(10_007, 7, Behavior::Copy),
+            )
+            .unwrap();
+        let mut second = create_box(&mut k, Point3::new(5.0, 0.0, 0.0), 1.0, 1.0, 1.0).unwrap();
+        let second_face = crate::topology::brep::p1::faces(&second, None)
+            .unwrap()
+            .first()
+            .copied()
+            .unwrap();
+        second
+            .add_attribute(
+                EntityRef::Face(second_face),
+                Attribute::long(10_008, 8, Behavior::Copy),
+            )
+            .unwrap();
+        let target_before = target.attribute_store().clone();
+        let second_before = second.attribute_store().clone();
+
+        {
+            let mut session =
+                FilletSession::with_second_base(&mut k, &mut target, Some(&mut second)).unwrap();
+            let store = &mut session.objects.attributes;
+            let planted = store
+                .insert(Attribute::long(10_009, 9, Behavior::Copy))
+                .unwrap();
+            // key 0 names no object (`loopuse::entity_of_notify_key`), so the hand-back
+            // clears its list; dropping its only user deletes the attribute but leaves
+            // the list naming it, and clearing that list then fails.
+            store.add_attribute(ObjectKey(0), planted).unwrap();
+            assert!(store.remove_user(planted, ObjectKey(0), false).unwrap());
+            assert!(
+                body_attributes(store, session.objects.target, session.objects.target_serial)
+                    .is_err()
+            );
+        }
+        assert_eq!(target.attribute_store(), &target_before);
+        assert_eq!(second.attribute_store(), &second_before);
+        assert_eq!(target.entity_attributes(EntityRef::Face(face)).len(), 1);
+        assert_eq!(
+            second.entity_attributes(EntityRef::Face(second_face)).len(),
+            1
+        );
     }
 }

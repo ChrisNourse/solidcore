@@ -43,6 +43,7 @@ pub mod api_files;
 pub mod api_projection;
 pub mod brep;
 pub mod brep_cache;
+pub mod brep_constructor;
 pub mod brep_data;
 pub mod brep_data_write;
 pub mod database_io;
@@ -680,7 +681,9 @@ impl Default for Vertexuse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NamingScheme {
     /// Not recorded: such routines leave the new geometry without owner (the caller
-    /// names it with its own identities).
+    /// names it with its own identities), except a UV trim curve, which
+    /// `SetUVTrimCurve` always owns by its holder: under the edge use's identity of
+    /// [`NamingScheme::Arena`] (its notification identity).
     #[default]
     Unknown,
     /// The Euler operators' notification identities
@@ -695,6 +698,43 @@ pub enum NamingScheme {
     /// ([`brep_cache::arena_identity`](crate::topology::brep_cache::arena_identity):
     /// the entity's type code and arena index).
     Arena,
+}
+
+/// The identity `entity` owns geometry under in a B-rep of naming `naming` that
+/// records `recorded` for it: [`Brep::owner_identity`] without the B-rep.
+#[must_use]
+pub(crate) fn owner_identity_of(
+    naming: NamingScheme,
+    recorded: Option<crate::geom::object::ObjectRef>,
+    entity: EntityRef,
+) -> crate::geom::object::ObjectRef {
+    match (naming, recorded) {
+        (NamingScheme::Caller, Some(key)) => key,
+        _ => scheme_owner_identity(naming, entity),
+    }
+}
+
+/// The identity a B-rep of naming `naming` names `entity` by when it records none:
+/// the Euler operators' notification identity ([`loopuse::notify_ref`]) under
+/// [`NamingScheme::Notify`], else the arena identity of the crate's imported B-reps
+/// ([`brep_cache::arena_identity`]) for edges, faces, vertices and the B-rep, and the
+/// notification identity for the other entities (edge uses among them).
+#[must_use]
+pub(crate) fn scheme_owner_identity(
+    naming: NamingScheme,
+    entity: EntityRef,
+) -> crate::geom::object::ObjectRef {
+    use brep_cache::{arena_identity, CacheObject};
+    if naming == NamingScheme::Notify {
+        return loopuse::notify_ref(entity);
+    }
+    match entity {
+        EntityRef::Edge(x) => arena_identity(CacheObject::Edge(x)),
+        EntityRef::Face(x) => arena_identity(CacheObject::Face(x)),
+        EntityRef::Vertex(x) => arena_identity(CacheObject::Vertex(x)),
+        EntityRef::Brep(_) => arena_identity(CacheObject::Brep),
+        other => loopuse::notify_ref(other),
+    }
 }
 
 /// A boundary representation (`SmBrep`): arenas of shells, faces, loops, edges and
@@ -779,14 +819,32 @@ pub struct Brep {
     attributes: AttributeStore,
 }
 
-/// A copy of the arenas whose curves and surfaces have no owner (the geometry's copy
-/// constructor resets it). Operations that find a curve's edge or a surface's face
-/// through its owner (the fillet merge, B-rep ray-fire caches, transforms of a body's
-/// geometry) therefore do not see the clone's topology: `fillet_edges` of a clone fails
-/// in its merge (#1144). To copy a body that is edited later (undo, history, preview),
-/// use [`brep::p3::api_brep_copy`] (`SmApiBrepCopy`), whose geometry the copy owns.
-/// [`Brep::clone_standing_for_self`] is a private stand-in for this B-rep (its geometry
-/// keeps this B-rep's owners) and not an independent body.
+/// A copy of the arenas whose curves and surfaces have **no owner**.
+///
+/// # Warning
+///
+/// The geometry's copy constructor resets every curve's and surface's owner, so a clone's
+/// geometry no longer names its edges and faces. Every kernel call that finds a curve's
+/// edge or a surface's face through the owner then silently skips them on the clone,
+/// with no error:
+/// - topology solves over the clone ([`crate::query::brep::LiveBrepObjects`],
+///   `query::api_queries::face_closest_point_in_shape` and the other shape and B-rep
+///   point, curve and ray solves): no face or edge answers, only vertices (a point on a
+///   face gets a corner);
+/// - `SmBrep::GetSurfaces` / `GetCurves` ([`brep::p1::surfaces`], [`brep::p1::curves`])
+///   and the `.smb` writer (`brep_data_write`'s `FromBrep`): the surfaces and curves are
+///   left out, the faces written without surface;
+/// - B-rep caches and ray-fire caches built from the clone (no curve or surface in their
+///   trees), the fillet merge (`fillet_edges` of a clone fails, #1144) and transforms of a
+///   body's geometry.
+///
+/// Use instead:
+/// - [`brep::p3::api_brep_copy`] (`SmApiBrepCopy`) for an independent body that is
+///   queried or edited later (undo, history, preview): the copy owns its geometry;
+/// - [`Brep::clone_standing_for_self`] for a private read-only stand-in for this B-rep
+///   (its geometry keeps this B-rep's owners), not an independent body.
+///
+/// See `plan/findings/topology--brep-clone-drops-geometry-owners.md`.
 impl Clone for Brep {
     fn clone(&self) -> Self {
         self.copy(false)
@@ -932,11 +990,14 @@ impl Brep {
 
     /// Relabels geometry owned by this B-rep's own topology records under
     /// [`NamingScheme::Arena`] ([`brep_cache::arena_identity`]), preserving shared or
-    /// unowned geometry and syncing face surface tolerances.
+    /// unowned geometry and syncing face surface tolerances. An edge use's own UV trim
+    /// curve takes the edge use's notification identity, the arena scheme's name for an
+    /// edge use (`edgeuse::p1::owner_ref`, `check_brep`).
     ///
     /// # Errors
     ///
-    /// [`SolidError::NotFound`] for a dangling face or edge id (none in practice).
+    /// [`SolidError::NotFound`] for a dangling face, edge or edge use id (none in
+    /// practice).
     pub fn use_arena_naming(&mut self) -> Result<()> {
         let edges: Vec<EdgeId> = self.edges.ids().collect();
         for edge in edges {
@@ -957,6 +1018,28 @@ impl Brep {
             });
             if rebound {
                 self.set_geometry_owner_key(entity, Some(arena));
+            }
+        }
+        let uses: Vec<EdgeuseId> = self.edgeuses.ids().collect();
+        for eu in uses {
+            let entity = EntityRef::Edgeuse(eu);
+            let notify = loopuse::notify_ref(entity);
+            let proven = self.geometry_owner_key(entity);
+            let rebound = self
+                .edgeuse_mut(eu)?
+                .uv_trim_curve
+                .as_mut()
+                .is_some_and(|curve| {
+                    let matched = curve
+                        .owner()
+                        .is_some_and(|o| o == notify || Some(o) == proven);
+                    if matched {
+                        curve.set_owner(Some(notify), None);
+                    }
+                    matched
+                });
+            if rebound {
+                self.set_geometry_owner_key(entity, Some(notify));
             }
         }
         let faces: Vec<FaceId> = self.faces.ids().collect();
@@ -985,6 +1068,26 @@ impl Brep {
         }
         self.naming = NamingScheme::Arena;
         Ok(())
+    }
+
+    /// The identity `entity` owns geometry under (upstream: the entity itself,
+    /// `pGeom->GetOwner() == this`): under [`NamingScheme::Caller`] the key recorded
+    /// for it where it was built or its geometry bound, else, and under every other
+    /// scheme, the scheme's own identity (the notification identity under
+    /// [`NamingScheme::Notify`], otherwise the arena identity of an edge, face or
+    /// vertex and the notification identity of any other entity). Geometry binders name new
+    /// geometry by it and [`check_brep`](crate::topology::brep::validation::check_brep)
+    /// checks owners against it, so the two always agree (upstream's identity exists
+    /// from the moment the entity does).
+    ///
+    /// It is a geometry-owner identity, unique only as a whole
+    /// [`ObjectRef`](crate::geom::object::ObjectRef) (type code and key): outside
+    /// [`NamingScheme::Notify`] a face, an edge and a vertex of one index share their key.
+    /// Never use it as an attribute or notification key (a `key_of` or `source_key`),
+    /// whose stores key by the key alone; use [`loopuse::notify_ref`].
+    #[must_use]
+    pub fn owner_identity(&self, entity: EntityRef) -> crate::geom::object::ObjectRef {
+        owner_identity_of(self.naming, self.geometry_owner_key(entity), entity)
     }
 
     /// Producer-supplied owner identity recorded when geometry was bound to `entity`.

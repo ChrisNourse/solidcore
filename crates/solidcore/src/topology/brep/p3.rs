@@ -32,10 +32,14 @@
 //! (`pOptContextForStack`) is the kernel. Notifications go to the caller's
 //! [`NotifyEnv`] (the B-rep spatial cache is not kept: no `BrepCacheSlot`).
 //!
-//! - **Records.** Upstream `delete` of a topology object unlinks it from its owning
-//!   list (`~SmTopology`); records stay in their arenas, unreachable, as in
-//!   `topology.brep_p2` (faces, edges and vertices leave the B-rep's lists, regions
-//!   leave the region list). The copy constructors build a new [`Brep`] and return it;
+//! - **Records.** Upstream `delete` of a topology object is the removal of its arena
+//!   record, after the object left its owning list (`~SmTopology`): `DeleteFace` and
+//!   `SqueezeEdge` remove every record they delete (the face, its face uses, loops,
+//!   loop uses and vertex uses, the merged region; the squeezed edge, its edge uses and
+//!   vertex uses and the deleted vertex), each after its last read (finding
+//!   `plan/findings/topology.brep_p3--deleted-records-stay-in-arenas.md`). Arena ids
+//!   are never reused, so the other records keep theirs. The copy constructors build a
+//!   new [`Brep`] and return it;
 //!   `MergeBrep` copies from another [`Brep`] (a self-merge, `MergeBrep(*this)`, cannot
 //!   be expressed).
 //! - **Ignored statuses.** The copy constructor ignores `MergeBrep`'s status (`SE`):
@@ -108,7 +112,7 @@ use std::borrow::Cow;
 
 use crate::curve::curve::{Curve, CurveKind};
 use crate::error::{EntityRef, Result, SolidError, SM_ERR_INVALID_INPUT};
-use crate::geom::attribute::ObjectKey;
+use crate::geom::attribute::{AttributeHandle, ObjectKey};
 use crate::geom::context::{
     is_reserved_key, Context, IdentitySlot, MarkLock, MarkType, ALL_MARKS, MAX_BREP_SERIAL,
     TOPOLOGY_KEY_BASE,
@@ -531,8 +535,8 @@ fn faceuse_remove_loopuse(b: &mut Brep, fu: FaceuseId, lu: LoopuseId) -> Result<
 
 /// `m_pFaceListHead->Remove(pFace); delete pFace`: takes the face off the B-rep's face
 /// list, notifies its destruction (`~SmFace`: `SmFace::Notify`, unit
-/// `topology.face_p3`), drops the surface it owns and removes it from every attribute
-/// it uses (`~SmAObject`'s `ClearAttributes`).
+/// `topology.face_p3`), drops the surface it owns, removes it from every attribute
+/// it uses (`~SmAObject`'s `ClearAttributes`) and removes its record.
 fn destroy_face(b: &mut Brep, env: &mut NotifyEnv<'_>, f: FaceId) -> Result<()> {
     b.remove_from_face_list(f);
     ignore_soft(face_notify(
@@ -555,6 +559,8 @@ fn destroy_face(b: &mut Brep, env: &mut NotifyEnv<'_>, f: FaceId) -> Result<()> 
         face.surface = None;
         b.set_geometry_owner_key(EntityRef::Face(f), None);
     }
+    // delete pFace
+    b.remove_face_record(f)?;
     Ok(())
 }
 
@@ -1338,9 +1344,19 @@ pub fn with_kernel_callbacks<R>(
 /// `brep`'s, which are lent for the copy only (a standalone attribute of `brep`
 /// stays there without users).
 ///
+/// Each naming must give distinct objects distinct keys where they carry attributes
+/// ([`crate::topology::loopuse::notify_ref`] does; [`Brep::owner_identity`] outside the
+/// notification scheme does not: a face, an edge and a vertex of one index share a key).
+/// (not upstream) The two namings may coincide (both `notify_ref`, the B-rep's own
+/// naming): the source is then named in a private domain for the copy, so its lists
+/// and records are not the copy's.
+///
 /// # Errors
 ///
-/// `SM_ERR_INVALID_INPUT` for no B-rep; those of [`copy_brep`].
+/// `SM_ERR_INVALID_INPUT` for no B-rep; `InvalidInput` (before anything changes) when
+/// `source_key` gives two objects of `brep` the key of one of its attribute lists, and
+/// (after the copy) when `env.key_of` gives two of the copy's objects the key of one of
+/// their lists; those of [`copy_brep`].
 pub fn api_brep_copy(
     k: &mut Kernel,
     env: &mut NotifyEnv<'_>,
@@ -1354,22 +1370,66 @@ pub fn api_brep_copy(
             entity: None,
         });
     };
-    // (not upstream) lend `brep`'s own attributes to the copy under `source_key`
-    let lent: Vec<(ObjectKey, usize)> = brep
+    // (not upstream: upstream names objects by their addresses) a source naming that
+    // gives `brep`'s objects the keys `env.key_of` gives them names the copy's objects
+    // too (the copy is built with `brep`'s arena ids), so source and copy would share
+    // records and attribute lists. The copy then names the source in a private
+    // domain, with the caller's records of the source copied there and dropped after.
+    let live = p2::live_entities(brep);
+    let shift = private_source_shift(&live, source_key, env.key_of)?;
+    let shifted = |e: EntityRef| {
+        let r = source_key(e);
+        ObjectRef {
+            type_code: r.type_code,
+            key: ObjectKey(r.key.0 + shift.unwrap_or(0)),
+        }
+    };
+    let source: &dyn Fn(EntityRef) -> ObjectRef = if shift.is_some() {
+        &shifted
+    } else {
+        source_key
+    };
+    if shift.is_some() {
+        for &e in &live {
+            if let Some(&r) = env.records.get(&source_key(e).key) {
+                env.records.insert(shifted(e).key, r);
+            }
+        }
+    }
+    // (not upstream) lend `brep`'s own attributes to the copy under `source`
+    let lent_keys: std::collections::BTreeSet<ObjectKey> = brep
         .attribute_store()
         .attributed_objects()
         .into_iter()
         .filter_map(crate::topology::loopuse::entity_of_notify_key)
-        .map(|e| {
-            let key = source_key(e).key;
-            (key, env.attributes.attributes(key).len())
+        .map(|e| source(e).key)
+        .collect();
+    // an object of `brep` sharing a lent list's key would pass that list to its copy
+    p2::distinct_listed_keys(brep, source, &|key| lent_keys.contains(&key), OP)?;
+    let before: Vec<(ObjectKey, usize)> = lent_keys
+        .iter()
+        .map(|&key| (key, env.attributes.attributes(key).len()))
+        .collect();
+    p2::seed_brep_attributes(env.attributes, brep.attribute_store().clone(), source)?;
+    // the handles the lend added, taken back exactly after the copy
+    let lent: Vec<(ObjectKey, Vec<AttributeHandle>)> = before
+        .into_iter()
+        .map(|(key, n)| {
+            (
+                key,
+                env.attributes.attributes(key).into_iter().skip(n).collect(),
+            )
         })
         .collect();
-    p2::seed_brep_attributes(env.attributes, brep.attribute_store().clone(), source_key)?;
-    let copy = copy_brep(k, env, brep, source_key, None, None, true, false);
-    for (key, before) in lent {
-        for h in env.attributes.attributes(key).into_iter().skip(before) {
+    let copy = copy_brep(k, env, brep, source, None, None, true, false);
+    for (key, handles) in lent {
+        for h in handles {
             env.attributes.remove_attribute(key, h, false)?;
+        }
+    }
+    if shift.is_some() {
+        for &e in &live {
+            env.records.remove(&shifted(e).key);
         }
     }
     let mut copy = copy?;
@@ -1377,6 +1437,41 @@ pub fn api_brep_copy(
     // (not upstream: the port's cached topology fields, true for the caller)
     copy.refresh_cached_topology();
     Ok(copy)
+}
+
+/// The shift [`api_brep_copy`] moves `source_key`'s keys by when they meet the keys
+/// `key_of` gives the same objects of the source (`live`), which the copy's objects
+/// get: the first multiple of `1 << 44` that moves every source key off them and
+/// stays below the kernel's reserved range; `None` when the namings are disjoint.
+///
+/// # Errors
+///
+/// `InvalidInput` when no such shift exists.
+fn private_source_shift(
+    live: &[EntityRef],
+    source_key: &dyn Fn(EntityRef) -> ObjectRef,
+    key_of: &dyn Fn(EntityRef) -> ObjectRef,
+) -> Result<Option<u64>> {
+    use std::collections::BTreeSet;
+    let source: BTreeSet<u64> = live.iter().map(|&e| source_key(e).key.0).collect();
+    let copy: BTreeSet<u64> = live.iter().map(|&e| key_of(e).key.0).collect();
+    if source.is_disjoint(&copy) {
+        return Ok(None);
+    }
+    for m in 1..64_u64 {
+        let shift = m << 44;
+        let clear = source.iter().all(|&key| {
+            key.checked_add(shift)
+                .is_some_and(|moved| !is_reserved_key(ObjectKey(moved)) && !copy.contains(&moved))
+        });
+        if clear {
+            return Ok(Some(shift));
+        }
+    }
+    Err(SolidError::invalid_input(
+        OP,
+        "no private domain for the source's names",
+    ))
 }
 
 /// Identities and optional separate notification context of a copy's source.
@@ -2479,6 +2574,7 @@ fn delete_face_in(
 
         // Remove and Delete the DelRegion
         ignore_soft(b.remove_region_from_list(del_region))?;
+        b.remove_region_record(del_region)?;
     }
 
     let mut new_wire_edges: Vec<EdgeId> = Vec::new();
@@ -2501,6 +2597,8 @@ fn delete_face_in(
             // Remove vertexuses from the vertex.
             vertex_remove_vertexuse(b, v, other_vu)?;
             vertex_remove_vertexuse(b, v, vu)?;
+            // delete pOtherVU
+            b.remove_vertexuse_record(other_vu)?;
             if n_vus == 2 {
                 // If there were only two VU - convert vertex to a shell vertex
                 let new_s = b.add_shell_record(crate::topology::Shell::default())?;
@@ -2516,6 +2614,11 @@ fn delete_face_in(
 
                 // count the number of shell vertics made
                 new_shell_vertex_count += 1;
+            } else {
+                // vertex was attached to this face and through other vertexuses to
+                // other wires or other faces - just delete VU and straighten out the
+                // rest later.
+                b.remove_vertexuse_record(vu)?;
             }
         } else {
             for eu in lu1::edgeuses(b, lu, None, None)? {
@@ -2563,6 +2666,9 @@ fn delete_face_in(
                     if any_edgeuse == Some(eu) {
                         any_edgeuse = None;
                     }
+                    // delete pVU1; delete pVU2
+                    b.remove_vertexuse_record(vu1)?;
+                    b.remove_vertexuse_record(vu2)?;
                 }
             }
         }
@@ -2576,6 +2682,12 @@ fn delete_face_in(
         faceuse_remove_loopuse(b, lfu, lu)?;
         let ofu = lu1::faceuse(b, other_lu)?.ok_or(null_deref("loop use without face use"))?;
         faceuse_remove_loopuse(b, ofu, other_lu)?;
+        // delete pL; delete pLU; delete pOtherLU
+        if let Some(l) = l {
+            b.remove_loop_record(l)?;
+        }
+        b.remove_loopuse_record(lu)?;
+        b.remove_loopuse_record(other_lu)?;
     }
 
     // Take care of face and faceuses - remove from lists
@@ -2593,6 +2705,8 @@ fn delete_face_in(
 
     // delete pFU; delete pOtherFU
     delete_faceuses(b, [fu, other_fu])?;
+    b.remove_faceuse_record(fu)?;
+    b.remove_faceuse_record(other_fu)?;
 
     if do_region_nesting {
         // If there are no vertices and no edges then the entire shell goes away.
@@ -2843,7 +2957,8 @@ fn delete_face_nesting(
     shell::destroy(k, b, last, env)
 }
 
-/// `delete pFU` for each face use (the arena keeps the record): `SmTopology`'s destructor
+/// The unlinking part of `delete pFU` for each face use (the caller then removes the
+/// records): `SmTopology`'s destructor
 /// removes a member still in its owner's list (`m_pListOwner->Remove(this)`, status
 /// ignored). After region nesting merged the two shells, the mate face use is in the
 /// surviving shell, which upstream's explicit `Remove`s no longer reach.
@@ -3474,6 +3589,9 @@ fn squeeze_edge_in(
         let v = vertexuse::vertex(b, vu)?.ok_or(null_deref("vertex use without vertex"))?;
         edge_remove_edgeuse(b, e, eu)?;
         vertex_remove_vertexuse(b, v, vu)?;
+        // delete pEU; delete pVU
+        b.remove_edgeuse_record(eu)?;
+        b.remove_vertexuse_record(vu)?;
     }
 
     // inform public two vertices are being merged into one
@@ -3528,7 +3646,10 @@ fn squeeze_edge_in(
         b.edge_mut(e)?.curve = None;
         b.set_geometry_owner_key(EntityRef::Edge(e), None);
     }
-    b.remove_from_edge_list(e);
+    // delete pDelVertex; delete pEdgeToSqueeze (the vertex's record goes last, after
+    // the edge's destruction notification that still names it)
+    b.remove_edge_record(e)?;
+    b.remove_vertex_record(del_vertex)?;
     Ok(())
 }
 

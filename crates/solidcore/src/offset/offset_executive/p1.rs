@@ -330,6 +330,11 @@ pub struct OffsetExecutive {
     /// convex round thinner than the wall), mated across instead of offset
     /// (`m_sCollapsedFaces`; only with `Kernel::fixes.offset_collapsed_rounds_mated`).
     pub(super) collapsed_faces: Vec<FaceId>,
+    /// Not upstream (WR-344 refinement, tangency-labs/solidcore#1795): the original edge
+    /// uses whose edge `EdgeuseOffset` could not mate (`MateEdges` failed); the merge
+    /// intersects their faces' offsets as upstream does, not taking them as mated (only
+    /// with `Kernel::fixes.offset_extended_edges_mated`).
+    pub(super) unmated_edgeuses: BTreeSet<EdgeuseId>,
     /// The faces of a local operation and the surfaces replacing theirs, in step (the
     /// part of `SmLocalOperationGeometryCreation` the executive reads: `m_vFaces`,
     /// `m_vSurfaces`).
@@ -381,6 +386,7 @@ impl OffsetExecutive {
             blend_to_faces: Relation::default(),
             extended_surfaces: BTreeMap::new(),
             collapsed_faces: Vec::new(),
+            unmated_edgeuses: BTreeSet::new(),
             local_faces: Vec::new(),
             local_surfaces: Vec::new(),
         }
@@ -901,7 +907,7 @@ impl OffsetExecutive {
     /// `RemoveExcessFaces`' forgetting of the removed faces: `m_vFUToF`, `m_vEToF`,
     /// `m_vVToF` and `m_vBlendToFaces` forget the pairs whose second is gone, and
     /// `m_vBlendToFaces` also those whose first is gone.
-    fn forget_faces(&mut self, gone: &BTreeSet<FaceId>) -> Result<()> {
+    pub(super) fn forget_faces(&mut self, gone: &BTreeSet<FaceId>) -> Result<()> {
         forget_seconds(&mut self.faceuse_to_faces, gone, None)?;
         forget_seconds(&mut self.edge_to_faces, gone, None)?;
         forget_seconds(&mut self.vertex_to_faces, gone, None)?;
@@ -1244,6 +1250,14 @@ impl OffsetExecutive {
                 &[],
                 &mut notifications.rekey(offset_key_of),
             )?;
+            // Not upstream (opt-in `Kernel::fixes.local_operation_step_walls`, fork
+            // tangency-labs/smlib 5d428ae): a step wall spans the gap between two edges
+            // exactly, as a lamina side wall does, and is kept out of the face extensions
+            // as one (extended along its rulings it can pass through its own axis, a step
+            // round a circle, and fold over itself).
+            if cap.closing_wall {
+                self.closing_faces.push(new_face);
+            }
             // map origEdge to its offset capFaces
             new_faces.push(new_face);
             self.relate_edge_face(edge, new_face);
@@ -1785,9 +1799,15 @@ impl OffsetExecutive {
                         // every edge without an offset cap face had its two faces' offsets
                         // mated along it (EdgeuseOffset), so they share their intersection
                         // edge already, as a tangent sector's do (the tangency test is then
-                        // skipped, as the fork's `||` does).
-                        let mated =
-                            kernel.fixes.offset_extended_edges_mated && self.extend_convex_edges();
+                        // skipped, as the fork's `||` does). An edge whose mate failed in
+                        // `EdgeuseOffset` (#1795: the offsets stop meeting round a closed
+                        // edge) was not mated: its faces' offsets are intersected as upstream
+                        // does.
+                        let mated = kernel.fixes.offset_extended_edges_mated
+                            && self.extend_convex_edges()
+                            && !edge::edgeuses(original, edge_id, None, None)?
+                                .iter()
+                                .any(|eu| self.unmated_edgeuses.contains(eu));
                         if mated
                             || eu2::is_tangent_sector(
                                 kernel,
@@ -2414,14 +2434,21 @@ impl OffsetExecutive {
             // on sNewFaces. The intersector over the one offset B-rep is merge p4's
             // arena adapter; its notifications are keyed under
             // `DELETE_FACES_NAMESPACE`, not `offset_key_of`.
-            ignore_status(KernelManifoldIntersector::delete_faces_in(
-                kernel,
-                brep,
-                &delete_faces,
-                &mut *notifications.records,
-                &mut *notifications.attributes,
-                DELETE_FACES_NAMESPACE,
-            ))?;
+            // The deletion edits the offset B-rep through the kernel context, whose
+            // callbacks a kernel-context caller has lent to `notifications.context`
+            // (upstream: the one context); without returning them the deletion
+            // failed as a nested edit and, its status ignored, kept the face.
+            let lent = notifications.context.as_deref_mut();
+            ignore_status(Context::with_lease_returned(kernel, lent, |kernel| {
+                KernelManifoldIntersector::delete_faces_in(
+                    kernel,
+                    brep,
+                    &delete_faces,
+                    &mut *notifications.records,
+                    &mut *notifications.attributes,
+                    DELETE_FACES_NAMESPACE,
+                )
+            }))?;
             new_faces.retain(|face| !delete_faces.contains(face));
         }
         Ok(new_faces)
@@ -3054,7 +3081,7 @@ fn notify_edge_and_vertices(
 
 /// `sm_ForgetSeconds`: forgets the pairs of `relation` whose second is in `gone` or,
 /// with `live`, is not in `live`.
-fn forget_seconds<A: Ord + Copy, B: Ord + Copy>(
+pub(super) fn forget_seconds<A: Ord + Copy, B: Ord + Copy>(
     relation: &mut Relation<A, B>,
     gone: &BTreeSet<B>,
     live: Option<&BTreeSet<B>>,

@@ -85,6 +85,7 @@ use solidcore::geom::extent1d::Extent1d;
 use solidcore::geom::extent2d::Extent2d;
 use solidcore::geom::object::{FaceKey, ObjectRef};
 use solidcore::kernel::Kernel;
+use solidcore::mass::integrator::properties::{brep_volume, PropertyAttributes};
 use solidcore::math::Vec3;
 use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
 use solidcore::nurbs::knots::Side;
@@ -179,6 +180,16 @@ enum Fixture {
     /// tolerance, as `smOffsetTest.cpp`'s `ShellBrep` reads it; the case's
     /// `tolerance` is not applied.
     File { path: String },
+    /// A one-face cylinder sheet: `CreateFaceFromSurface` on a bounded `SmCylinder`
+    /// (X axis `(1,0,0)`, Y axis `(0,1,0)`, 0 to 360 degrees, `height` up, line
+    /// generator) over its natural domain, closed round along a seam edge. Thickened
+    /// (`create_offset_solid`), it is a tube whose end rings are the walls on its two
+    /// circles (tangency-labs/solidcore#1599).
+    CylinderSheet {
+        origin: [f64; 3],
+        radius: f64,
+        height: f64,
+    },
 }
 impl Fixture {
     fn native(&self) -> ffi::Fixture {
@@ -220,6 +231,15 @@ impl Fixture {
             },
             Self::Sphere { origin, radius } => ffi::Fixture::Sphere { origin, radius },
             Self::File { ref path } => ffi::Fixture::File { path: path.clone() },
+            Self::CylinderSheet {
+                origin,
+                radius,
+                height,
+            } => ffi::Fixture::CylinderSheet {
+                origin,
+                radius,
+                height,
+            },
         }
     }
     /// Built by a native primitive constructor (and its Rust port), or read from an
@@ -227,7 +247,11 @@ impl Fixture {
     const fn primitive(&self) -> bool {
         matches!(
             self,
-            Self::Box { .. } | Self::Cylinder { .. } | Self::Sphere { .. } | Self::File { .. }
+            Self::Box { .. }
+                | Self::Cylinder { .. }
+                | Self::Sphere { .. }
+                | Self::File { .. }
+                | Self::CylinderSheet { .. }
         )
     }
     /// The face count a selection index is checked against; a file's faces are
@@ -235,7 +259,7 @@ impl Fixture {
     const fn face_count(&self) -> usize {
         match self {
             Self::Empty | Self::Wire { .. } => 0,
-            Self::PlaneSheet { .. } | Self::Sphere { .. } => 1,
+            Self::PlaneSheet { .. } | Self::Sphere { .. } | Self::CylinderSheet { .. } => 1,
             Self::Box { .. } => 6,
             Self::Cylinder { .. } => 3,
             Self::File { .. } => ffi::MAX_FILE_FACES,
@@ -352,6 +376,102 @@ struct Inputs {
     /// and edge attribute sets are compared (`attributes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attributed: Option<u8>,
+    /// Volume queries (#1528: a query that changes a later operation, fixtures only):
+    /// `result` compares the result's `SmApiBrepComputeVolume` after the call;
+    /// `source_first` also queries the operand's volume before the call (the shim's
+    /// measured entry point, `brep_volume` here), both compared as `volumes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume_query: Option<VolumeQuery>,
+}
+/// [`Inputs::volume_query`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VolumeQuery {
+    Result,
+    SourceFirst,
+}
+impl VolumeQuery {
+    const fn native(self) -> ffi::VolumeQuery {
+        match self {
+            Self::Result => ffi::VolumeQuery::Result,
+            Self::SourceFirst => ffi::VolumeQuery::SourceFirst,
+        }
+    }
+}
+/// The accuracy of the volume queries (the shim's `volume_accuracy`).
+const VOLUME_ACCURACY: f64 = 1e-6;
+/// `SmApiBrepComputeVolume` of `brep` as the shim's `put_volume`: `status volume` (the
+/// native status, volume `0` on failure), `-1 0` without B-rep.
+fn volume_pair(kernel: &Kernel, brep: Option<&mut Brep>) -> RResult<[f64; 2]> {
+    let Some(brep) = brep else {
+        return Ok([-1.0, 0.0]);
+    };
+    let store = AttributeStore::default();
+    let attributes = PropertyAttributes {
+        store: &store,
+        key_of: &|_| ObjectKey(0),
+    };
+    let (status, volume) = operation(brep_volume(kernel, brep, VOLUME_ACCURACY, &attributes))?;
+    Ok([f64::from(status), volume.unwrap_or(0.0)])
+}
+/// The operand state a volume query can write, as the shim's `put_operand_state` (read
+/// without writing): the number of edge uses holding a UV trim curve, then per edge use
+/// (`SmBrep::GetEdgeuses` order: each edge's uses, edges in `GetEdges` order) `0` without
+/// trim, `2` for one without NURB, else `1` and its first and last homogeneous control
+/// points `x y w`; then per vertex use (`GetVertexuses` order) `0` when its vertex/face
+/// gap is not initialised, else `1 gap u v`. Empty without B-rep.
+fn operand_state(brep: Option<&Brep>) -> HResult<Vec<f64>> {
+    let Some(brep) = brep else {
+        return Ok(Vec::new());
+    };
+    let mut edgeuses = Vec::new();
+    for e in brep_p1::edges(brep, None).map_err(setup)? {
+        edgeuses.extend(solidcore::topology::edge::edgeuses(brep, e, None, None).map_err(setup)?);
+    }
+    let mut vertexuses = Vec::new();
+    for v in brep_p1::vertices(brep, None).map_err(setup)? {
+        vertexuses.extend(solidcore::topology::vertex::vertexuses(brep, v).map_err(setup)?);
+    }
+    let trims = edgeuses
+        .iter()
+        .map(|&eu| {
+            brep.edgeuse(eu)
+                .map(|r| r.uv_trim_curve.as_ref())
+                .map_err(setup)
+        })
+        .collect::<HResult<Vec<_>>>()?;
+    let mut out = vec![trims.iter().filter(|t| t.is_some()).count() as f64];
+    for trim in trims {
+        let Some(curve) = trim else {
+            out.push(0.0);
+            continue;
+        };
+        let base = match curve.kind() {
+            CurveKind::BSpline(x) => Some(x),
+            CurveKind::Ellipse(x) => Some(x.base()),
+            CurveKind::Hyperbola(x) => Some(x.base()),
+            CurveKind::Parabola(x) => Some(x.base()),
+            CurveKind::Line(x) => Some(x.base()),
+            _ => None,
+        };
+        let points = base.and_then(|b| b.gw_nurb()).map(solidcore::nurbs::crv_basic::Curve::cpts);
+        match points.and_then(|p| p.first().zip(p.last())) {
+            Some((first, last)) => {
+                out.push(1.0);
+                out.extend([first.x, first.y, first.w, last.x, last.y, last.w]);
+            }
+            None => out.push(2.0),
+        }
+    }
+    for vu in vertexuses {
+        let gap = &brep.vertexuse(vu).map_err(setup)?.vertex_face_gap;
+        if gap.is_init() {
+            out.extend([1.0, gap.gap_3d, gap.face_uv.x, gap.face_uv.y]);
+        } else {
+            out.push(0.0);
+        }
+    }
+    Ok(out)
 }
 impl Inputs {
     fn native(&self) -> ffi::Request {
@@ -514,6 +634,17 @@ fn validate(input: &Inputs) -> HResult<()> {
                 finite(&[height, origin[2] + height])?;
             }
             Fixture::Sphere { origin, radius } => primitive_finite(origin, radius)?,
+            Fixture::CylinderSheet {
+                origin,
+                radius,
+                height,
+            } => {
+                primitive_finite(origin, radius)?;
+                finite(&[height, origin[2] + height])?;
+                if radius <= 0.0 || height <= 0.0 {
+                    return Err(bad("cylinder sheet needs a positive radius and height"));
+                }
+            }
         }
     }
     Ok(())
@@ -761,6 +892,51 @@ fn build(kernel: &mut Kernel, fixture: &Fixture, tolerance: f64, namespace: u64)
                 point2(scale),
                 &domain,
             ));
+            let mut records = solidcore::topology::topology::NotifyRecords::new();
+            let mut attributes = AttributeStore::default();
+            let key_of = |entity| notification_key(entity, namespace);
+            let mut env = solidcore::topology::edge::NotifyEnv {
+                records: &mut records,
+                attributes: &mut attributes,
+                context: None,
+                key_of: &key_of,
+            };
+            let mut marks = solidcore::topology::topology_traverser::Marks::default();
+            let this_face = |face: FaceId| key_of(EntityRef::Face(face));
+            let mut fenv = solidcore::topology::brep::p8::FaceBuildEnv {
+                env: &mut env,
+                marks: &mut marks,
+                this_face: &this_face,
+            };
+            solidcore::topology::brep::p8::create_face_from_surface(
+                kernel,
+                &mut brep,
+                Some(surface),
+                &domain,
+                &mut fenv,
+            )
+            .map_err(setup)?;
+        }
+        Fixture::CylinderSheet {
+            origin,
+            radius,
+            height,
+        } => {
+            // The native fixture: `CreateFaceFromSurface(new SmCylinder(..),
+            // GetNaturalUVDomain())` on the new B-rep.
+            let surface = Surface::from(solidcore::surface::cone::p1::Cone::new_cylinder_bounded(
+                v3(origin),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                radius,
+                0.0,
+                360.0,
+                height,
+                false,
+                false,
+                false,
+            ));
+            let domain = surface.natural_uv_domain_with_nurb(kernel).map_err(setup)?;
             let mut records = solidcore::topology::topology::NotifyRecords::new();
             let mut attributes = AttributeStore::default();
             let key_of = |entity| notification_key(entity, namespace);
@@ -1419,12 +1595,13 @@ fn unchanged(before: Option<&ffi::BrepSnapshot>, after: Option<&ffi::BrepSnapsho
     match (before, after) {
         (None, None) => true,
         (Some(a), Some(b)) => {
-            a.integers == b.integers
-                && a.values.len() == b.values.len()
-                && a.values
-                    .iter()
-                    .zip(&b.values)
-                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            // The gap caches count too: the Rust side's purity state is the whole
+            // B-rep, caches included, and both kernels refresh some of them on the
+            // source (`CalcVertexFaceGap` resets every same-face use's cache).
+            let same = |x: &[f64], y: &[f64]| {
+                x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits())
+            };
+            a.integers == b.integers && same(&a.values, &b.values) && same(&a.caches, &b.caches)
         }
         _ => false,
     }
@@ -1608,15 +1785,15 @@ fn notification_key(entity: EntityRef, namespace: u64) -> ObjectRef {
     }
 }
 
-fn original_notification_key(entity: EntityRef) -> ObjectRef {
+pub(super) fn original_notification_key(entity: EntityRef) -> ObjectRef {
     notification_key(entity, 1)
 }
 
-fn result_notification_key(entity: EntityRef) -> ObjectRef {
+pub(super) fn result_notification_key(entity: EntityRef) -> ObjectRef {
     notification_key(entity, 3)
 }
 
-fn original_curve_key(edge: EdgeId, type_code: i64) -> ObjectRef {
+pub(super) fn original_curve_key(edge: EdgeId, type_code: i64) -> ObjectRef {
     ObjectRef {
         key: ObjectKey((5_u64 << 60) | ((type_code as u64) << 32) | u64::from(edge.index())),
         type_code,
@@ -1624,7 +1801,7 @@ fn original_curve_key(edge: EdgeId, type_code: i64) -> ObjectRef {
 }
 
 // Source lists are opaque notification handles, disjoint from topology and curves.
-fn boolean_source_lists(result: bool, region: RegionId) -> [ObjectRef; 2] {
+pub(super) fn boolean_source_lists(result: bool, region: RegionId) -> [ObjectRef; 2] {
     let namespace = if result { 7_u64 } else { 6_u64 };
     [0_u64, 1].map(|list| ObjectRef {
         key: ObjectKey((namespace << 60) | (list << 32) | u64::from(region.index())),
@@ -1632,7 +1809,7 @@ fn boolean_source_lists(result: bool, region: RegionId) -> [ObjectRef; 2] {
     })
 }
 
-fn result_curve_key(edge: EdgeId, type_code: i64) -> ObjectRef {
+pub(super) fn result_curve_key(edge: EdgeId, type_code: i64) -> ObjectRef {
     ObjectRef {
         key: ObjectKey((4_u64 << 60) | ((type_code as u64) << 32) | u64::from(edge.index())),
         type_code,
@@ -1675,7 +1852,7 @@ fn copy_source_lists(region: RegionId) -> [ObjectRef; 2] {
 /// and below the kernel's reserved bit 63: bits 58-59 tell topology (1), curves (2)
 /// and source lists (3) apart, bits 46-57 hold the merge-store handle, bits 32-45 the
 /// type code.
-struct MergeBodies;
+pub(super) struct MergeBodies;
 impl MergeBodies {
     fn key(class: u64, brep: BrepId, kind: u64, index: u32) -> ObjectKey {
         ObjectKey(
@@ -1732,10 +1909,10 @@ impl SweepIdentities for MergeBodies {
 }
 
 /// The notification namespace of the source fixture's identities.
-const NAMESPACE_SOURCE: u64 = 1;
+pub(super) const NAMESPACE_SOURCE: u64 = 1;
 /// The notification namespace of the foreign fixture's identities.
 const NAMESPACE_FOREIGN: u64 = 2;
-fn register_notification_brep(
+pub(super) fn register_notification_brep(
     records: &mut solidcore::topology::topology::NotifyRecords,
     brep: &mut Brep,
     namespace: u64,
@@ -1813,6 +1990,18 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
             tag_source(brep, behavior)?;
         }
     }
+    // the shim's `volume_query == 1`: the operand's volume, queried before the call
+    let source_volume = if input.volume_query == Some(VolumeQuery::SourceFirst) {
+        volume_pair(&kernel, source.as_mut())?
+    } else {
+        [-1.0, 0.0]
+    };
+    // the operand state right after the (optional) query, before the call
+    let source_state = if input.volume_query.is_some() {
+        operand_state(source.as_ref())?
+    } else {
+        Vec::new()
+    };
     if let Some(brep) = foreign.as_mut() {
         register_notification_brep(&mut records, brep, NAMESPACE_FOREIGN);
     }
@@ -1916,7 +2105,7 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
             &mut notifications,
         ),
     };
-    let (status, result) = operation(result)?;
+    let (status, mut result) = operation(result)?;
     let result_projection = result.as_ref().map(rust_result_projection).transpose()?;
     let offset_projection = exec
         .as_ref()
@@ -1996,6 +2185,13 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
     ] {
         output = project(output, key, projection);
     }
+    if input.volume_query.is_some() {
+        // the result's volume, after every snapshot (as the shim's tail)
+        let result_volume = volume_pair(&kernel, result.as_mut())?;
+        output = output
+            .values("volumes", [source_volume, result_volume].concat())
+            .values("operand", source_state);
+    }
     Ok(output)
 }
 
@@ -2006,9 +2202,20 @@ impl UnitDiff for Runner {
     fn run_cpp(&self, case: &Case) -> HResult<Output> {
         let input: Inputs = case.parse()?;
         // FFI argument errors are NEVER constructor rejections or native statuses.
-        let outcome = ffi::eval(&input.native())
+        let Some(query) = input.volume_query else {
+            let outcome = ffi::eval(&input.native())
+                .map_err(|error| bad(format!("native p2 adapter: {error}")))?;
+            return native_outcome(&input, outcome);
+        };
+        let (outcome, volumes) = ffi::eval_measured(&input.native(), query.native())
             .map_err(|error| bad(format!("native p2 adapter: {error}")))?;
-        native_outcome(&input, outcome)
+        let output = native_outcome(&input, outcome)?;
+        Ok(match volumes {
+            Some(v) => output
+                .values("volumes", [v.source_before, v.result].concat())
+                .values("operand", v.operand),
+            None => output,
+        })
     }
     fn run_rust(&self, case: &Case) -> HResult<Output> {
         match rust_output(&case.parse()?) {
@@ -2096,6 +2303,7 @@ fn generated(rng: &mut Rng) -> Inputs {
         },
         heap_ordered_vertices: false,
         attributed: None,
+        volume_query: None,
     };
     match category {
         0 | 1 => {
@@ -2215,6 +2423,7 @@ mod tests {
             config: Config::default(),
             heap_ordered_vertices: false,
             attributed: None,
+            volume_query: None,
         }
     }
     fn case(input: &Inputs) -> Case {
@@ -2229,6 +2438,7 @@ mod tests {
         ffi::BrepSnapshot {
             integers: vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             values: vec![tolerance],
+            caches: Vec::new(),
         }
     }
     fn empty_snapshot(status: i32) -> ffi::Snapshot {
@@ -2671,6 +2881,7 @@ mod tests {
         let mut block = ffi::BrepSnapshot {
             integers: ints,
             values,
+            caches: Vec::new(),
         };
         let decoded = decode_block(&block).unwrap();
         let fixture = sheet([0.0; 3], 1.0, 0);
@@ -2700,6 +2911,13 @@ mod tests {
         assert_eq!(changed.ints["input.pure"], [0, 1]);
         snapshot.source_after = snapshot.source_before.clone();
         snapshot.source_after.as_mut().unwrap().values[0] = 2e-6;
+        assert_eq!(
+            native_output(&input, &snapshot).unwrap().ints["input.pure"],
+            [0, 1]
+        );
+        // A reset gap cache alone also breaks purity, as on the Rust side.
+        snapshot.source_after = snapshot.source_before.clone();
+        snapshot.source_after.as_mut().unwrap().caches = vec![0.0; 5];
         assert_eq!(
             native_output(&input, &snapshot).unwrap().ints["input.pure"],
             [0, 1]
