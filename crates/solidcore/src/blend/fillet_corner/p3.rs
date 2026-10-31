@@ -3547,14 +3547,26 @@ mod tests {
             let mut fb = FilletBrep::new();
             let solver = FilletSolver::new(1e-6, 1e-3, 1e-6);
             let fg = fb.add_geom(
-                FilletGeom::new(&k, Some((FilletSolverId(0), &solver)), FilletGeomType::Blends)
-                    .unwrap(),
+                FilletGeom::new(
+                    &k,
+                    Some((FilletSolverId(0), &solver)),
+                    FilletGeomType::Blends,
+                )
+                .unwrap(),
             );
             let (c_start, c_end) = (FilletCornerId(1), FilletCornerId(2));
             let mut rails = Vec::new();
             for (i, (p, q, corners)) in [
-                (Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0), (c_start, c_end)),
-                (Point3::new(2.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0), (c_end, c_start)),
+                (
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(2.0, 0.0, 0.0),
+                    (c_start, c_end),
+                ),
+                (
+                    Point3::new(2.0, 1.0, 0.0),
+                    Point3::new(0.0, 1.0, 0.0),
+                    (c_end, c_start),
+                ),
             ]
             .into_iter()
             .enumerate()
