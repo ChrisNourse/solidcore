@@ -19,7 +19,8 @@
 //!   3. subtracts that region from the target with the manifold Boolean.
 //!
 //! Exactness: a planar surface continues exactly (its plane over a larger domain: a plane,
-//! or a B-spline SMLib finds planar, a loft's wall; WR-635, `eddf0ed`); any other
+//! or a B-spline SMLib finds planar, a loft's wall; WR-635, `eddf0ed`); a cylinder, cone,
+//! sphere or torus continues as itself (`db4a655`, [`continued_surface`]); any other
 //! surface is used within its own domain, and a needed continuation of one is refused
 //! (`FilletErrorType::NotExact`). A side edge continues past its end only when it is a
 //! straight line. An end the fillet runs past is cut only by a planar end face.
@@ -45,6 +46,8 @@
 //! | `loop_area` (private)        | `sm_LoopArea` (`bba9914`)              |
 //! | `reverse_loop` (private)     | `sm_Reverse` (`bba9914`)               |
 //! | [`close_round_loop`]         | `sm_CloseRoundLoop` (`bba9914`)        |
+//! | [`continued_surface`], [`ContinuedSurface`] | `sm_ContinuedSurface` (`db4a655`) |
+//! | [`close_band`]               | `sm_CloseBand` (`db4a655`)             |
 //!
 //! Deviations:
 //! - **Errors.** `GetFilletErrorInfo()->NoteError(code, comment)` followed by `SM_ERR`
