@@ -24,6 +24,16 @@ and exactly surface tests 1 and 6. No private correction is linked into this pro
 Before sweep, `ValidatePointers` returns 1000 and `AssertValid` returns true,
 despite eight tolerance-gap reports. After sweep, pointer validation still returns
 1000 but `AssertValid` returns false with six reports. A larger sweep epsilon
-(`1e-4`) returns 1001 rather than a valid bottle. No successful repair is claimed.
+(`1e-4`) returns 1001 rather than a valid bottle.
 The private bounds correction remains diagnostic only; the unmodified native
 reference crashes on this input. See PR #1937 and its Rust investigation record.
+
+PR #1937 adds `Kernel::fixes.translation_sweep_regularize`, off by default. For a
+non-merged in-place whole-body translation it squeezes newly swept degenerate
+faces at the existing body tolerance and removes isolated open-edge inner slit
+loops. The bottle retains 84 faces and two regions. Rust and unmodified native
+validation of its exported result both return Level0 AssertValid true, initially
+with three inherited gap reports and with none on a repeated check. No tolerance
+is increased. Level2 retains one vertex gap (`4.7135458964e-5` versus `2e-5`)
+already present in the original input; this is not a complete repair of the input.
+The default sweep and direct EdgeSweepHigher behavior are unchanged.

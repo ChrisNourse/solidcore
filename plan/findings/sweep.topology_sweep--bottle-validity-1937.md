@@ -1,7 +1,9 @@
 # sweep.topology_sweep: bottle validity after UB-170 (2026-10-31)
 
 PR: #1937. Units: `sweep.topology_sweep`, `sweep.trans_sweep_geometry`.
-This is an unresolved defect, not a successful repair or a new difftest pass.
+Default behavior reproduces the native defect. The opt-in repair below removes the
+new sweep defects; it does not repair pre-existing input gaps or count as a new
+native parity pass.
 
 Input: pinned v1.0.1 `TestFiles/pt_TestFiles/Fillet/bottle.smb`, whole-body
 translation `(0,0,4)`, six null target arrays, stitching and merge disabled,
@@ -47,37 +49,46 @@ failure to the accepted nearly parallel sweep, but does not prove that rejecting
 or omitting the edge would preserve the whole swept solid.
 
 Repeated validation is significant: a second Level0 check of the **unchanged**
-Rust result returns pointer status 1001, with trimming tests 2, 3 and 4, and skips
+Rust result returns pointer status 1000 but adds failed reports for trimming tests 2, 3 and 4, and skips
 AssertValid. The first check populated derived UV curves. The additional
 orientation / zero-area reports identify face 101 in this traversal; the bad
 extrusion is face 77, loop 117. These local arena indices are diagnostic, not stable
 fixture identifiers. The repeated-check behavior has not been tested in C++.
 
-Two diagnostic-only repairs did not establish a valid bottle:
+## Opt-in repair
 
-- Replace the invalid face's support with the exact `y=0` plane and reproject its
-  four boundary curves. All four drops report zero distance. With a local origin
-  and scaled orthogonal parameters, the replacement face's loop computes `Same`
-  orientation and the original UV gap disappears. Whole-body validation still
-  rejects face 101's orientation / zero area, also exposed by the unchanged-body
-  repeated check. Thus the plane experiment is promising for the surface and UV
-  defects, but is not evidence of a valid whole-body repair.
-- Call `brep::p5::squeeze_face` on the invalid face using the original body
-  tolerance. It returns upstream status 1001 from `topology::brep::p3`, and the
-  modified body fails pointer validation. The failures alone do not establish
-  damage from squeezing, because repeated validation already exposes more
-  failures without an edit; the failed repair status is sufficient to rule out
-  claiming this experiment as a successful repair.
+`Kernel::fixes.translation_sweep_regularize` (off by default) regularizes a
+non-merged, in-place whole-body translation after its final repetition. It tests
+newly swept higher faces for degeneracy at one quarter of the existing body
+tolerance and squeezes them using the existing notification-aware Euler operation.
+It also deletes isolated open-edge inner slit loops: exactly two opposite uses
+of the same edge, four uses across the mates, and no adjacent different face.
+It restores editing state, refreshes derived topology caches, and clears result
+mappings to deleted entities even if an Euler operation fails.
 
-No experimental mutation is included in library code. An eventual result-changing
-repair must be opt-in and demonstrate valid topology, not just remove surface
-reports or return an error. The input already has tolerance-gap reports:
-`BrepCheck::is_valid()` and the native AssertValid boolean must not be conflated.
+For the bottle, it squeezes one narrow extrusion and removes 40 inner slit edges.
+The result retains 84 faces, 317 edges, 377 vertices and two regions. No tolerance
+is increased. The first Level0 check returns pointer status 1000, no pointer
+reports, AssertValid true, and the three surviving input edge/surface gap reports.
+The repeated check returns true with no reports. The initial reports are checked
+against the corresponding input reports, not filtered out of validation.
+
+Independent validation of the Rust-written ASCII output with the unmodified
+native libraries gives the same results: first Level0 true with three inherited
+reports, repeated Level0 true with no reports. Level2 still returns false with
+one vertex gap, `4.7135458964e-5` versus tolerance `2e-5`. The same Level2 defect
+is present in the unswept native input (which has nine reports). Thus this repairs
+the introduced surface and loop defects, not every defect in the source bottle.
+
+The first squeeze experiment failed because B-rep editing was disabled; enabling
+editing makes the Euler operation succeed. Replacing the support with a plane
+was rejected: the face remains geometrically degenerate at the existing tolerance.
+No plane replacement, tolerance increase, or validation suppression is included.
 
 ## Reproduction
 
-`crates/solidcore/tests/issue_1937_bottle_sweep.rs` characterizes the current defect.
-The reduced test runs normally. The full-body test is ignored only because it
+`crates/solidcore/tests/issue_1937_bottle_sweep.rs` checks default parity and the opt-in repair.
+The reduced test runs normally. The full-body tests are ignored only because it
 requires the untracked upstream fixture; run it explicitly:
 
 ```sh
@@ -85,8 +96,10 @@ CARGO_BUILD_JOBS=2 nice -n 10 cargo test --profile difftest -p solidcore \
   --test issue_1937_bottle_sweep -- --include-ignored --nocapture
 ```
 
-Passing these characterization assertions means the defect is reproduced, not
-fixed. The caller supplies distinct topology identities to both the reader and
+The default test pins the native failures; the opt-in test pins the repaired
+topology, surviving input reports, repeated validation, and live result mappings.
+Ordinary and near-parallel box sweeps supply additional regression coverage.
+The caller supplies distinct topology identities to both the reader and
 the borrowed `SweepStore`, following the whole-body difftest runner. The imported
 B-rep's own key is assigned the caller's body handle before registration; kernel
 identity checks are unchanged.
