@@ -21,8 +21,8 @@
 
 use solidcore::blend::feature_executive::{FeatureExecutive, RebuildBrepType};
 use solidcore::geom::attribute::AttributeStore;
-use solidcore::geom::object::ObjectRef;
 use solidcore::geom::attribute::ObjectKey;
+use solidcore::geom::object::ObjectRef;
 use solidcore::topology::brep::p1 as bp1;
 use solidcore::topology::brep::p10::TopologyEnv;
 use solidcore::topology::brep::p7::read_from_file;
