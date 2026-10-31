@@ -242,6 +242,19 @@ impl SolverObject {
         }
     }
 
+    /// `GetSolverType` of this actual concrete solver (the derived class's override).
+    ///
+    /// # Errors
+    /// Those of the concrete solver's [`FilletSolverOps::solver_type`].
+    pub fn solver_type(&self) -> Result<FilletSolverType> {
+        match self {
+            Self::ConstantRadius(solver) => FilletSolverOps::solver_type(solver.as_ref()),
+            Self::ConstantDistance(solver) => FilletSolverOps::solver_type(solver.as_ref()),
+            Self::VariableRadius(solver) => FilletSolverOps::solver_type(solver.as_ref()),
+            Self::SurfaceSurface(solver) => FilletSolverOps::solver_type(solver.as_ref()),
+        }
+    }
+
     /// Borrow the same base for a native member write.
     pub fn base_mut(&mut self) -> &mut FilletSolver {
         match self {
@@ -472,6 +485,12 @@ impl CornerSolverStore for SessionSolvers<'_> {
     }
     fn len(&self) -> usize {
         self.0.len()
+    }
+    fn solver_type(&self, index: usize) -> Option<Result<FilletSolverType>> {
+        self.0
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(SolverObject::solver_type)
     }
 }
 
@@ -3560,6 +3579,30 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             EntityRef::Edge(edge),
         )))
     }
+    fn geometry_mitred_corner_edges(
+        &self,
+        corner: FilletObject,
+    ) -> Result<Option<(FilletObject, FilletObject)>> {
+        let FilletObject::Corner(id) = corner else {
+            return Err(invalid("object is not a corner"));
+        };
+        let Some(corner) = self.corners.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        if corner.corner_type() != FilletCornerType::NByTwo || !corner.is_mitre() {
+            return Ok(None);
+        }
+        let (first, second) = corner.filleted_edgeuses()?;
+        let edge = |edgeuse| -> Result<FilletObject> {
+            let edge = crate::topology::edgeuse::p1::edge(self.target, edgeuse)?
+                .ok_or_else(|| invalid("corner edgeuse without edge"))?;
+            Ok(FilletObject::Topology(
+                FilletBody::Target,
+                EntityRef::Edge(edge),
+            ))
+        };
+        Ok(Some((edge(first)?, edge(second)?)))
+    }
     fn geometry_rails_fit(
         &mut self,
         k: &mut Kernel,
@@ -4315,6 +4358,38 @@ impl FilletParametersAccess<FilletObject> for SessionObjects<'_> {
         };
         Ok(owner == which
             && crate::topology::brep::p1::is_live_topology_member(body, Some(EntityRef::Edge(id))))
+    }
+    fn parameters_split_blended_vertex_fans(
+        &mut self,
+        _k: &Kernel,
+        brep: FilletObject,
+        edges: &[FilletObject],
+    ) -> Result<Vec<crate::math::Point3>> {
+        // SplitBlendedVertexFans (the fork's, tangency-labs/smlib@e418750): the target only
+        let FilletObject::Body(FilletBody::Target) = brep else {
+            return Err(invalid("fan split outside the target"));
+        };
+        let mut done = BTreeSet::new();
+        let mut points = Vec::new();
+        for &edge in edges {
+            let FilletObject::Topology(FilletBody::Target, EntityRef::Edge(id)) = edge else {
+                return Err(invalid("edge is not in the target"));
+            };
+            let (start, end) = crate::topology::vertex::edge_vertex_pair(self.target, id)?;
+            for v in [start, end] {
+                let v = v.ok_or_else(|| SolidError::null_pointer(OP))?;
+                if !done.insert(v) {
+                    continue;
+                }
+                let made =
+                    crate::topology::brep::vertex_fans::split_vertex_by_fans(self.target, v)?;
+                if !made.is_empty() {
+                    points.push(crate::topology::vertex::point(self.target, v)?);
+                }
+                done.extend(made);
+            }
+        }
+        Ok(points)
     }
 }
 
