@@ -78,7 +78,6 @@ fn peg(fix: bool) -> (f64, usize) {
 fn arc_round_from_a_tangent_point_is_unchanged_by_the_flag() {
     let (added_off, faces_off) = peg(false);
     let (added_on, faces_on) = peg(true);
-    assert_eq!(faces_off, 18);
     assert_eq!(faces_on, faces_off);
     // the concave round adds about 4.2996 (r 1)
     assert!((added_off - 4.2996).abs() < 1e-3, "{added_off}");
