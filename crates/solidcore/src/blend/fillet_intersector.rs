@@ -287,6 +287,16 @@ pub trait FilletSolverOps {
     /// The solver's failure.
     fn reload_surface_offsets(&mut self) -> Result<()>;
 
+    /// `OffsetRadiiCanChange()`: whether the solver's offsets change along the trace
+    /// (a virtual: `TRUE` for the `SmFilletSolver` base and the variable radius solver,
+    /// `FALSE` for the constant radius solvers). Read only with
+    /// `fixes.fillet_variable_span_follows_fillet`.
+    ///
+    /// # Errors
+    ///
+    /// The solver's failure.
+    fn offset_radii_can_change(&self) -> Result<bool>;
+
     /// `GetSurface(rail)->Evaluate1stDerivatives(uv, TRUE, TRUE, ..)`: the point and
     /// first partials of the rail's offset surface.
     ///
@@ -324,13 +334,16 @@ pub trait FilletSolverOps {
     fn self_intersection_handler(&self) -> Result<Option<HandlingAlgorithmType>>;
 
     /// The handler's `SmoothOutIntersection(pFilletGeom, r3DCurves, rUVCurves1,
-    /// rUVCurves2)`: joins the new curves to the fillet geometry's previous section.
+    /// rUVCurves2)`: joins the new curves to the fillet geometry's previous section
+    /// (stored in `pseudo`).
     ///
     /// # Errors
     ///
-    /// The handler's failure; [`SolidError::Unported`] until ported.
+    /// The handler's failure.
     fn smooth_out_intersection(
         &mut self,
+        k: &Kernel,
+        pseudo: &mut FilletBrep,
         geom: &Self::FilletGeom,
         curves_3d: &mut Vec<BSplineCurve>,
         uv_curves1: &mut Vec<BSplineCurve>,
@@ -470,6 +483,11 @@ impl FilletSolverOps for ConstantRadiusAssistedFs {
         self.solver.reload_surface_offsets()
     }
 
+    fn offset_radii_can_change(&self) -> Result<bool> {
+        // SmConstantRadiusFS::OffsetRadiiCanChange
+        Ok(ConstantRadiusAssistedFs::offset_radii_can_change(self))
+    }
+
     fn compute_uv_vectors(&mut self, _k: &Kernel, point: &mut TsectPnt) -> Result<()> {
         // SmFilletSolver::ComputeUVVectors reads only the intersection point
         compute_uv_vectors(point)
@@ -543,20 +561,21 @@ impl FilletSolverOps for ConstantRadiusAssistedFs {
 
     fn smooth_out_intersection(
         &mut self,
-        _geom: &FilletGeomId,
-        _curves_3d: &mut Vec<BSplineCurve>,
-        _uv_curves1: &mut Vec<BSplineCurve>,
-        _uv_curves2: &mut Vec<BSplineCurve>,
+        k: &Kernel,
+        pseudo: &mut FilletBrep,
+        geom: &FilletGeomId,
+        curves_3d: &mut Vec<BSplineCurve>,
+        uv_curves1: &mut Vec<BSplineCurve>,
+        uv_curves2: &mut Vec<BSplineCurve>,
     ) -> Result<()> {
-        // FlushCurve calls this only for a smoothing handler. The only handler an
-        // executive can hold here is `SmMakeSurfaceBlendSIH` (blending), and the
-        // smoothing override `SmMakeCurveBlendSIH::SmoothOutIntersection` has no
-        // owning unit (plan/findings.md "fillet_solver_p1: SmoothOutIntersection").
-        // UNPORTED(blend.fillet_executive_p1): SmSelfIntersectionHandler::SmoothOutIntersection (justified: findings.md "fillet_solver_p1: SmoothOutIntersection")
-        Err(SolidError::unported(
-            "SmSelfIntersectionHandler::SmoothOutIntersection",
-            "blend.fillet_executive_p1",
-        ))
+        // FlushCurve calls this only after `self_intersection_handler` found the
+        // executive's smoothing handler (without an executive that read has already
+        // failed: a NULL dereference upstream), and the only smoothing handler is
+        // SmMakeCurveBlendSIH: run its SmoothOutIntersection on this solver
+        let handler = self.solver.executive_curve_blend_sih.ok_or_else(|| {
+            SolidError::invalid_input(OP_FLUSH, "no smoothing self-intersection handler")
+        })?;
+        handler.smooth_out_intersection(self, k, pseudo, *geom, curves_3d, uv_curves1, uv_curves2)
     }
 
     fn has_surface_generator(&self) -> Result<bool> {
@@ -669,6 +688,56 @@ impl FilletSolverOps for ConstantRadiusAssistedFs {
             .ok_or_else(|| SolidError::invalid_input(OP_FLUSH, "rail edge use without mate"))?;
         pseudo.set_edgeuse_uv_curve(mate, Some(Curve::from(uv_curve)), true, true)
     }
+}
+
+/// The solver members `SmMakeCurveBlendSIH::SmoothOutIntersection` reaches when this
+/// solver is the intersector's own (no target B-rep: the rail faces' surfaces cannot
+/// be read, [`SolidError::InvalidInput`] where upstream reads them).
+impl crate::blend::fillet_solver::curve_blend_sih::SmoothingSolver for ConstantRadiusAssistedFs {
+    fn original_face_has_surface(&self, _face: crate::topology::FaceId) -> Result<bool> {
+        Err(SolidError::invalid_input(
+            OP_FLUSH,
+            "no target B-rep for the rail faces",
+        ))
+    }
+
+    fn setup_offset_radius(&mut self, tsect: &TsectPnt) -> Result<f64> {
+        let mut radius = 0.0;
+        crate::blend::fillet_solver::p1::FilletSolverOps::setup_offset_values(
+            self,
+            tsect,
+            Some(&mut radius),
+        )?;
+        Ok(radius)
+    }
+
+    fn base_natural_uv_domain(&self, rail: usize) -> Result<Extent2d> {
+        Ok(own_offset_surface(&self.solver, rail)?
+            .base_surface()
+            // (kernel-free: a lazy analytic answers its NURB-less base's empty domain)
+            .natural_uv_domain_if_built())
+    }
+
+    fn rail_surface(&self, rail: usize) -> Result<Surface> {
+        Ok(Surface::from(
+            own_offset_surface(&self.solver, rail)?.surface.clone(),
+        ))
+    }
+
+    fn this_approx_tol_3d(&self) -> f64 {
+        self.solver.approx_tol_3d
+    }
+}
+
+/// `GetSurface(rail)` (an `SmOffsetSurface*`; upstream dereferences it unchecked).
+fn own_offset_surface(
+    solver: &FilletSolver,
+    rail: usize,
+) -> Result<&crate::blend::fillet_custom_solver::OffsetSurface> {
+    solver
+        .surface(rail)?
+        .map(|slot| &slot.surface)
+        .ok_or_else(|| SolidError::invalid_input(OP_FLUSH, "no offset surface"))
 }
 
 /// `pFilletGeom->GetRail(rail)`, dereferenced (`NULL` is [`SolidError::InvalidInput`]).
@@ -1257,6 +1326,16 @@ impl<'s, 't, O: SolutionObject + 't, G: Clone> FilletIntersector<'s, 't, O, G> {
             return Ok(out);
         }
 
+        // (not upstream, `fixes.fillet_trace_rejects_short_step`, WR-503) a point far short of the
+        // step is another root of the equations, not the next point of this trace
+        if k.fixes.fillet_trace_rejects_short_step
+            && !step.clipped
+            && tsect.crv_pos().distance(next_tsp.crv_pos()) < 0.5 * step_size.abs()
+        {
+            demote_singularity(next_tsp);
+            return Ok(out);
+        }
+
         // get change in 3dCurve angle for this step
         let angle_found_rad = tsect.crv_deriv().angle_between(next_tsp.crv_deriv())?;
         out.angle_found_rad = Some(angle_found_rad);
@@ -1422,6 +1501,67 @@ impl<'s, 't, O: SolutionObject + 't, G: Clone> FilletIntersector<'s, 't, O, G> {
             // save the max deviation
             if dist_sq > max_dist_sq {
                 max_dist_sq = dist_sq;
+            }
+        }
+
+        // (not upstream, `fixes.fillet_variable_span_follows_fillet`, WR-646; the fork's
+        // tangency-labs/smlib@4438859) where the fillet's offsets change along the trace
+        // (a variable radius), the rails between two points must follow the fillet, not
+        // only lie on the faces: on a plane every uv curve does, so the test above holds
+        // for any span, the step grows to the angle tolerance, and the Hermite rails cut
+        // across the radius law between the points. The fillet is solved at the test
+        // points (a step of that share of the span from the start), and the span is
+        // rejected where a solution's contacts lie farther than the tolerance from the
+        // rails.
+        if k.fixes.fillet_variable_span_follows_fillet
+            && solver.offset_radii_can_change()?
+            && step_size > EFF_ZERO * 100.0
+        {
+            let rails = [&crv_3d0, &crv_3d1];
+            for &param in &PARAMS_TO_TEST {
+                let mut part_step = step_size * param;
+                let mut part_flags = StepSolve::default();
+                let mut part = TsectPnt::new();
+                solver.reload_surface_offsets()?;
+                solver.step_solve(
+                    k,
+                    tsect,
+                    &mut part_step,
+                    &si.uv_domains[0],
+                    &si.uv_domains[1],
+                    &mut part_flags,
+                    &mut part,
+                )?;
+                solver.set_surfaces_to_zero_offset()?;
+                if !part_flags.found_answer || part_flags.clipped {
+                    continue; // no solution inside the span there: the rails' own test stands
+                }
+                let contact0 = s0.evaluate_point(
+                    k,
+                    si.uv_domains[0].clamp_point(part.uv_pos(SrfIndex::First)),
+                )?;
+                let contact1 = s1.evaluate_point(
+                    k,
+                    si.uv_domains[1].clamp_point(part.uv_pos(SrfIndex::Second)),
+                )?;
+                for (rail, contact) in rails.into_iter().zip([contact0, contact1]) {
+                    let rail_curve = Curve::from(*rail);
+                    let (on, sol) = rail_curve.local_point_solve::<()>(
+                        k,
+                        &rail_curve.natural_interval(),
+                        SolverOperation::Minimize,
+                        contact,
+                        &PointSolveOptions::default(),
+                        param,
+                    )?;
+                    let t = if on { sol.start.param(0)? } else { param };
+                    let on_rail = rail.evaluate_point(t);
+                    if on_rail.distance_squared(contact) > tol_sq {
+                        solver.reload_surface_offsets()?;
+                        out.found_good_point = false;
+                        return Ok(out);
+                    }
+                }
             }
         }
 
@@ -1763,6 +1903,8 @@ impl<'s, 't, O: SolutionObject + 't, G: Clone> FilletIntersector<'s, 't, O, G> {
         if let Some(algorithm) = solver.self_intersection_handler()? {
             if algorithm == HandlingAlgorithmType::Smoothing {
                 let smoothed = solver.smooth_out_intersection(
+                    k,
+                    pseudo,
                     &fillet_geom,
                     &mut curves_3d,
                     &mut surface1_uv_curves,
@@ -2350,6 +2492,10 @@ mod tests {
             Ok(())
         }
 
+        fn offset_radii_can_change(&self) -> Result<bool> {
+            Ok(false)
+        }
+
         fn rail_surface_evaluate_1st_derivatives(
             &mut self,
             _k: &Kernel,
@@ -2373,6 +2519,8 @@ mod tests {
 
         fn smooth_out_intersection(
             &mut self,
+            _k: &Kernel,
+            _pseudo: &mut FilletBrep,
             _geom: &(),
             _curves_3d: &mut Vec<BSplineCurve>,
             _uv_curves1: &mut Vec<BSplineCurve>,
@@ -2598,7 +2746,12 @@ mod tests {
             .unwrap();
         assert!(pseudo.geom(g).unwrap().center_line_curve().is_some());
         s.set_fillet_surface(&mut pseudo, &g, None).unwrap();
-        assert!(pseudo.geom(g).unwrap().fillet_surface().unwrap().is_none());
+        assert!(pseudo
+            .geom(g)
+            .unwrap()
+            .fillet_surface(None)
+            .unwrap()
+            .is_none());
         // a geometry without rails: upstream dereferences NULL
         assert!(matches!(
             s.set_rail_curve(&mut pseudo, &g, 0, line.clone())

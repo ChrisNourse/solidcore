@@ -22,6 +22,8 @@
 //! `SweepEdgeHigh` makes a swept face's missing extrusion NURB (a recognised tiny-turn
 //! revolution) before its degenerate test, where upstream's lazy
 //! `GetOrCreateGwNurbPointer` in `EdgeSweepHigher` already made it in place.
+//! Opt-in `translation_sweep_regularize` removes degenerate swept faces and
+//! isolated slit loops after non-merged in-place whole-body translations.
 
 use super::access::{
     EdgeRef, EdgeuseRef, FaceBuild, FaceInput, FaceRef, RegionRef, SweepAccess, VertexRef,
@@ -426,7 +428,7 @@ impl TopologySweep {
             ));
         }
         let curve_count = swept.trim_curves.len();
-        let domain = surface.natural_uv_domain();
+        let domain = surface.natural_uv_domain_with_nurb(a.kernel(region.0)?)?;
         let built = a.make_face(FaceInput {
             region,
             loop_counts: vec![curve_count],
@@ -593,7 +595,7 @@ impl TopologySweep {
         }
         let (surface, tolerance) =
             required(g.face_sweep_same(a.kernel(region.0)?, a.brep(original.0)?, original.1)?)?;
-        let domain = surface.natural_uv_domain();
+        let domain = surface.natural_uv_domain_with_nurb(a.kernel(region.0)?)?;
         let built = a.make_face(FaceInput {
             region,
             loop_counts,
@@ -901,6 +903,15 @@ impl TopologySweep {
                     wire_temporaries.retain(|&id| id != wire_brep);
                     wire = WireSweep::Absent;
                 }
+            }
+            if whole
+                && self.repetitions > 0
+                && !self.do_merge
+                && original == destination_brep
+                && matches!(g, SweepGeometry::Translation(_))
+                && a.kernel(original)?.fixes.translation_sweep_regularize
+            {
+                self.regularize_translation(a, original)?;
             }
             Ok(())
         })();
@@ -1239,10 +1250,7 @@ mod tests {
 
     #[derive(Default)]
     struct Access {
-        records: std::collections::BTreeMap<
-            crate::geom::attribute::ObjectKey,
-            crate::topology::topology::Topology,
-        >,
+        records: crate::topology::topology::NotifyRecords,
         attributes: crate::geom::attribute::AttributeStore,
         kernel: Kernel,
         breps: Vec<Brep>,

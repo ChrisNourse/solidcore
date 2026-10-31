@@ -152,7 +152,7 @@ fn first_n<const N: usize>(v: &[Vec3]) -> [Vec3; N] {
 fn status_value(e: &SolidError) -> f64 {
     match e {
         SolidError::Upstream { code, .. } => f64::from(*code),
-        SolidError::InvalidInput { .. } => 1007.0,
+        SolidError::InvalidInput { .. } | SolidError::PortInvariant { .. } => 1007.0,
         _ => 1001.0,
     }
 }
@@ -452,9 +452,25 @@ impl Curve {
         match self.kind() {
             // the SmCrvOnSurf override (its cache update is lost on this copy)
             CurveKind::CrvOnSurf(c) => {
-                let mut c = c.as_ref().clone();
+                let mut c = c.clone_exact_shared();
                 let (curve, gap) =
                     c.approximate_curve(k, breaks, approx_tol_3d, opts.match_parameterization)?;
+                Ok(CurveApproximation {
+                    curve: Curve::from(curve),
+                    achieved_tol: Some(gap),
+                })
+            }
+            // the SmCrvOnSurf override on the derived object (its Evaluate approximates)
+            CurveKind::TangentField(c) => {
+                let members = c.members();
+                let mut c = c.base().clone();
+                let (curve, gap) = c.approximate_curve_as(
+                    k,
+                    breaks,
+                    approx_tol_3d,
+                    opts.match_parameterization,
+                    Some(members),
+                )?;
                 Ok(CurveApproximation {
                     curve: Curve::from(curve),
                     achieved_tol: Some(gap),
@@ -1633,6 +1649,41 @@ impl Curve {
         )
     }
 
+    /// [`Curve::global_point_solve`] for a caller that names no handles, keeping the
+    /// curve's cache in `cache` across calls as [`Curve::global_point_solve_cached`]
+    /// does. The cache names the stand-in handle of the unnamed solve (the curve with its
+    /// natural interval), so the slot must belong to this curve, unchanged since the
+    /// cache was built.
+    ///
+    /// # Errors
+    ///
+    /// As [`Curve::global_point_solve`].
+    pub(crate) fn global_point_solve_unnamed_cached<O: SolutionObject>(
+        &self,
+        k: &Kernel,
+        interval: &Extent1d,
+        op: SolverOperation,
+        test_point: Point3,
+        dist_tol: f64,
+        requested: SolutionRequested,
+        target_distance: Option<f64>,
+        cache: &mut Option<CurveCache<OperandObject>>,
+    ) -> Result<SolutionArray<O>> {
+        let ivl = self.natural_interval();
+        let inner = GlobalPointSolveOptions {
+            target_distance,
+            opt_vectors: None,
+            handle: Some(OperandObject::Curve(0, ivl)),
+            analytic_handle: Some(OperandObject::Curve(2, ivl)),
+            zone_tol_3d: None,
+        };
+        Ok(self
+            .global_point_solve_cached(
+                k, interval, op, test_point, dist_tol, requested, &inner, cache,
+            )?
+            .without_objects())
+    }
+
     /// [`Curve::global_point_solve`] keeping the curve's cache in `cache` across calls,
     /// as upstream keeps it on the curve (`GetOrCreateObjectCache`): the cache is built
     /// where the solve first needs it (with the same errors) and reused by later calls
@@ -2108,6 +2159,7 @@ impl Curve {
             | CurveKind::Offset(_)
             | CurveKind::CrvInVolume(_)
             | CurveKind::CrvOnSurf(_)
+            | CurveKind::TangentField(_)
             | CurveKind::Composite(_) => {
                 self.tessellate_base(k, interval, chord_height_tol, angle_tol_deg, min_segments)
             }
@@ -2316,6 +2368,109 @@ mod tests {
         fn kind(&self) -> crate::geom::solution_array::ObjectKind {
             crate::geom::solution_array::ObjectKind::Other
         }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct CurveId(usize);
+    impl SolutionObject for CurveId {
+        fn kind(&self) -> crate::geom::solution_array::ObjectKind {
+            crate::geom::solution_array::ObjectKind::Other
+        }
+    }
+
+    fn range_solution(start: [f64; 2], end: [f64; 2]) -> Solution<CurveId> {
+        let mut sol = Solution::new();
+        sol.solution_type = SolutionType::RangeOfValues;
+        sol.num_variables = 2;
+        sol.num_objects = 2;
+        sol.objects[0] = Some(CurveId(0));
+        sol.objects[1] = Some(CurveId(1));
+        sol.start.parameters[..2].copy_from_slice(&start);
+        sol.end.parameters[..2].copy_from_slice(&end);
+        sol
+    }
+
+    #[test]
+    fn range_refinement_polishes_both_ends_in_each_parameter_direction() {
+        let mut k = Kernel::default();
+        k.fixes.refine_cc_range_ends = true;
+        // The line and quadratic bow meet exactly at x=0 and x=1.
+        for reverse1 in [false, true] {
+            for reverse2 in [false, true] {
+                let line = Curve::from(HermiteCurve::new(
+                    if reverse1 { Vec3::X } else { Vec3::ZERO },
+                    if reverse1 { -Vec3::X } else { Vec3::X },
+                    if reverse1 { Vec3::ZERO } else { Vec3::X },
+                    if reverse1 { -Vec3::X } else { Vec3::X },
+                    3,
+                ));
+                let bow = Curve::from(HermiteCurve::new(
+                    if reverse2 { Vec3::X } else { Vec3::ZERO },
+                    Vec3::new(if reverse2 { -1.0 } else { 1.0 }, 0.1, 0.0),
+                    if reverse2 { Vec3::ZERO } else { Vec3::X },
+                    Vec3::new(if reverse2 { -1.0 } else { 1.0 }, -0.1, 0.0),
+                    3,
+                ));
+                let parameter = |x: f64, reverse| if reverse { 1.0 - x } else { x };
+                let mut sol = range_solution(
+                    [parameter(0.0001, reverse1), parameter(0.0001, reverse2)],
+                    [parameter(0.9999, reverse1), parameter(0.9999, reverse2)],
+                );
+                for end in [&mut sol.start, &mut sol.end] {
+                    end.solution_value = line
+                        .evaluate_point(&k, end.parameters[0])
+                        .unwrap()
+                        .distance(bow.evaluate_point(&k, end.parameters[1]).unwrap());
+                    assert!(end.solution_value > 1e-6);
+                }
+                let mut solutions = SolutionArray::new();
+                solutions.add(&sol);
+                let curves = [&line, &bow];
+                refine_cc_solutions(&k, &mut solutions, |id| {
+                    id.and_then(|CurveId(i)| curves.get(i).copied())
+                })
+                .unwrap();
+                let refined = solutions.get(0).unwrap();
+                for (end, x) in [(refined.start, 0.0), (refined.end, 1.0)] {
+                    assert!(
+                        end.solution_value < 1e-10,
+                        "{reverse1:?}, {reverse2:?}: {end:?}"
+                    );
+                    assert!((end.parameters[0] - parameter(x, reverse1)).abs() < 1e-8);
+                    assert!((end.parameters[1] - parameter(x, reverse2)).abs() < 1e-8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn range_refinement_rejects_an_end_jump_to_the_start() {
+        let mut k = Kernel::default();
+        k.fixes.refine_cc_range_ends = true;
+        let line = Curve::from(HermiteCurve::new(Vec3::ZERO, Vec3::X, Vec3::X, Vec3::X, 3));
+        let direction = Vec3::new(1.0, 0.1, 0.0);
+        let crossing = Curve::from(HermiteCurve::new(
+            Vec3::ZERO,
+            direction,
+            direction,
+            direction,
+            3,
+        ));
+        // The only intersection is at zero. The end solve converges there too,
+        // but accepting it would collapse almost the entire candidate range.
+        let mut sol = range_solution([0.0001; 2], [0.9; 2]);
+        sol.start.solution_value = 0.00001;
+        sol.end.solution_value = 0.09;
+        let mut solutions = SolutionArray::new();
+        solutions.add(&sol);
+        let curves = [&line, &crossing];
+        refine_cc_solutions(&k, &mut solutions, |id| {
+            id.and_then(|CurveId(i)| curves.get(i).copied())
+        })
+        .unwrap();
+        let refined = solutions.get(0).unwrap();
+        assert!(refined.start.solution_value < 1e-10);
+        assert_eq!(refined.end, sol.end);
     }
 
     #[test]
