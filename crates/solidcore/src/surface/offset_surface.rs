@@ -2217,10 +2217,12 @@ const AS_ITSELF_MAX_TRIES: u32 = 4096;
 /// `SM_ERR` for an end span of no length or a failed knot insertion; the errors of
 /// [`nurb_of`].
 fn extend_as_itself(k: &Kernel, surface: &Surface, lo: Point2, hi: Point2) -> Result<Surface> {
+    // `!(a < b)` and `!(a > b)` as upstream writes them (false for a NaN operand too)
     use crate::nurbs::crv_adv::p1::CurveEnd;
     use crate::nurbs::srf_adv::p3::extend_by_param_dist;
     use crate::nurbs::srf_basic::Direction;
     use crate::nurbs::srf_tool::p1::insert_knot;
+    use core::cmp::Ordering::{Greater, Less};
     let mut cur = nurb_of(k, surface)?;
     for d in 0..2_usize {
         for e in 0..2_usize {
@@ -2252,9 +2254,9 @@ fn extend_as_itself(k: &Kernel, surface: &Surface, lo: Point2, hi: Point2) -> Re
                 // reached (to the parameters' rounding: a piece of no length is no extension)
                 let same = EFF_ZERO * (1.0 + bound.abs() + range);
                 if if e == 0 {
-                    !(goal < bound - same)
+                    goal.partial_cmp(&(bound - same)) != Some(Less)
                 } else {
-                    !(goal > bound + same)
+                    goal.partial_cmp(&(bound + same)) != Some(Greater)
                 } {
                     break;
                 }
@@ -2262,7 +2264,7 @@ fn extend_as_itself(k: &Kernel, surface: &Surface, lo: Point2, hi: Point2) -> Re
                 let knots = if d == 0 { cur.u_knots() } else { cur.v_knots() };
                 let top = if d == 0 { idx.r } else { idx.s };
                 let deg = if d == 0 { idx.p } else { idx.q };
-                if !(step > 0.0) {
+                if step.partial_cmp(&0.0) != Some(Greater) {
                     // the end span's parameter length
                     let at = |i: usize| knots.get(i).copied().unwrap_or(f64::NAN);
                     let end_knot = at(if e == 0 { 0 } else { top });
@@ -2272,7 +2274,7 @@ fn extend_as_itself(k: &Kernel, surface: &Surface, lo: Point2, hi: Point2) -> Re
                     }
                     step = (at(i) - end_knot).abs();
                 }
-                if !(step > EFF_ZERO * (1.0 + range)) {
+                if step.partial_cmp(&(EFF_ZERO * (1.0 + range))) != Some(Greater) {
                     return Err(SolidError::sm_err(OP_EXTEND));
                 }
                 let par = if e == 0 {
