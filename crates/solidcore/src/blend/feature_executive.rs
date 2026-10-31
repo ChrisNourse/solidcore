@@ -225,6 +225,7 @@ impl FeatureLoop {
 
 /// A feature: connected faces of a B-rep bounded by feature loops (`SmFeature`).
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)] // upstream's SmFeature flags
 pub struct Feature {
     /// `m_sFeatureLoops`.
     pub loops: Vec<FeatureLoop>,
@@ -597,12 +598,7 @@ impl<'a> FeatureExecutive<'a> {
                 continue;
             };
             keep_unported(partition_feature(k, self.base, feature))?;
-            keep_unported(build_patches(
-                k,
-                self.base,
-                feature,
-                &mut self.patches,
-            ))?;
+            keep_unported(build_patches(k, self.base, feature, &mut self.patches))?;
             keep_unported(apply_patches(k, self.base, feature, &mut self.patches))?;
         }
         Ok(())
@@ -825,7 +821,12 @@ fn build_patches(
 
     // Rebuild for the base
     for ii in 0..n_loops {
-        let has_patch = feature.loops.get(ii).ok_or_else(sm_err)?.base_patch.is_some();
+        let has_patch = feature
+            .loops
+            .get(ii)
+            .ok_or_else(sm_err)?
+            .base_patch
+            .is_some();
         // Skip loops that already have patches
         let stat = if has_patch {
             Ok(())
@@ -887,7 +888,12 @@ fn build_patches(
     } else {
         // Rebuild for the feature
         for ii in 0..n_loops {
-            let has_patch = feature.loops.get(ii).ok_or_else(sm_err)?.feat_patch.is_some();
+            let has_patch = feature
+                .loops
+                .get(ii)
+                .ok_or_else(sm_err)?
+                .feat_patch
+                .is_some();
             let stat = if has_patch {
                 Ok(())
             } else {
@@ -921,7 +927,10 @@ enum Side {
 fn side_brep<'b>(base: &'b Brep, feature: &'b Feature, side: Side) -> Result<&'b Brep> {
     match side {
         Side::Base => Ok(base),
-        Side::Feature => feature.fbrep.as_ref().ok_or_else(|| SolidError::null_pointer(OP)),
+        Side::Feature => feature
+            .fbrep
+            .as_ref()
+            .ok_or_else(|| SolidError::null_pointer(OP)),
     }
 }
 
@@ -933,7 +942,10 @@ fn side_brep_mut<'b>(
 ) -> Result<&'b mut Brep> {
     match side {
         Side::Base => Ok(base),
-        Side::Feature => feature.fbrep.as_mut().ok_or_else(|| SolidError::null_pointer(OP)),
+        Side::Feature => feature
+            .fbrep
+            .as_mut()
+            .ok_or_else(|| SolidError::null_pointer(OP)),
     }
 }
 
@@ -965,7 +977,9 @@ fn build_patch(
 
     // Confirm we have bisected the brep
     if !feature.is_partitioned {
-        return Err(assert_failure("Cannot rebuild the brep before partitioning"));
+        return Err(assert_failure(
+            "Cannot rebuild the brep before partitioning",
+        ));
     }
 
     // Get the pointer to the brep we are operating on
@@ -1022,7 +1036,11 @@ fn build_patch(
         || rebuild_type == RebuildBrepType::ExtendSurface;
     let use_b_patch = base_is_source && l.base_patch.is_some() && ext_rebuild;
     let use_f_patch = !base_is_source && l.feat_patch.is_some() && ext_rebuild;
-    let cached = if use_b_patch { l.base_patch } else { l.feat_patch };
+    let cached = if use_b_patch {
+        l.base_patch
+    } else {
+        l.feat_patch
+    };
 
     let pid = if (use_b_patch || use_f_patch) && feature.use_b_patch_for_f {
         // If the patch we want has already been built.
@@ -1040,7 +1058,11 @@ fn build_patch(
         if let Some(l) = feature.loops.get_mut(li) {
             l.tried_ext_surf |= ext_rebuild;
         }
-        let tol = tol::brep_zone_tol_3d(k, side_brep(base, feature, target)?, SmallTopoType::default());
+        let tol = tol::brep_zone_tol_3d(
+            k,
+            side_brep(base, feature, target)?,
+            SmallTopoType::default(),
+        );
         let mut patch = new_brep(k)?;
         crate::topology::brep::p2::set_tolerance(k, &mut patch, tol, true, true)?;
         let save_patch = patch.editing_enabled();
@@ -1106,7 +1128,10 @@ fn apply_patches(
     }
 
     if feature.feat_rebuilt && !feature.feat_was_applied {
-        let fbrep = feature.fbrep.as_mut().ok_or_else(|| SolidError::null_pointer(OP))?;
+        let fbrep = feature
+            .fbrep
+            .as_mut()
+            .ok_or_else(|| SolidError::null_pointer(OP))?;
         for l in &feature.loops {
             let Some(pid) = l.feat_patch else {
                 continue;
@@ -1134,7 +1159,10 @@ fn apply_patches(
 /// stitches it and deletes the feature B-rep; `SM_ERR` unless restorable.
 fn restore_feature(k: &mut Kernel, base: &mut Brep, feature: &mut Feature) -> Result<()> {
     if feature.can_restore {
-        let mut fbrep = feature.fbrep.take().ok_or_else(|| SolidError::null_pointer(OP))?;
+        let mut fbrep = feature
+            .fbrep
+            .take()
+            .ok_or_else(|| SolidError::null_pointer(OP))?;
         let faces = bp1::faces(&fbrep, None)?;
         keep_unported(copy_faces(k, &mut fbrep, &faces, base, true).map(drop))?;
         ignore_status(stitch_and_orient(k, base))?;
@@ -1162,7 +1190,11 @@ fn join_patches(
     let mut patch = new_brep(k)?;
 
     for l in &mut feature.loops {
-        let this_patch = if base_loops { l.base_patch } else { l.feat_patch };
+        let this_patch = if base_loops {
+            l.base_patch
+        } else {
+            l.feat_patch
+        };
         if base_loops {
             l.use_b_patch = false;
         } else {
@@ -1197,7 +1229,11 @@ fn join_patches(
     }
 
     // Get the pointer to the brep we are operating on
-    let target = if base_loops { Side::Base } else { Side::Feature };
+    let target = if base_loops {
+        Side::Base
+    } else {
+        Side::Feature
+    };
     let curves = edge_curves(side_brep(base, feature, target)?, &loop_edges)?;
     {
         let tgt = side_brep_mut(base, feature, target)?;
@@ -1237,7 +1273,10 @@ fn edge_curves(b: &Brep, edges: &[EdgeId]) -> Result<Vec<LoopCurve>> {
     let mut out = Vec::new();
     for &e in edges {
         let r = b.edge(e)?;
-        let c = r.curve.clone().ok_or_else(|| SolidError::null_pointer(OP))?;
+        let c = r
+            .curve
+            .clone()
+            .ok_or_else(|| SolidError::null_pointer(OP))?;
         out.push((c, r.interval));
     }
     Ok(out)
@@ -1247,7 +1286,10 @@ fn edge_curves(b: &Brep, edges: &[EdgeId]) -> Result<Vec<LoopCurve>> {
 /// (`DropPoint(.., SM_SO_INTERSECT)` within `tol`).
 fn on_loop_curve(k: &Kernel, b: &Brep, e: EdgeId, curves: &[LoopCurve], tol: f64) -> Result<bool> {
     let r = b.edge(e)?;
-    let curve = r.curve.as_ref().ok_or_else(|| SolidError::null_pointer(OP))?;
+    let curve = r
+        .curve
+        .as_ref()
+        .ok_or_else(|| SolidError::null_pointer(OP))?;
     let crv_pt = curve.evaluate_point(k, r.interval.mid())?;
     for (orig, ivl) in curves {
         let drop = orig.drop_point(k, ivl, crv_pt, None, tol, None, SolverOperation::Intersect)?;
@@ -1273,7 +1315,9 @@ fn validate_patch(
     // Quality test 0: Existence check
     let mut good_patch = !patch_faces.is_empty();
     if !good_patch {
-        return Err(assert_failure("No Surfaces available to connect Loop Edges"));
+        return Err(assert_failure(
+            "No Surfaces available to connect Loop Edges",
+        ));
     }
 
     // Quality test 1: Check that each face is only lamina along rLoopEdges
@@ -1282,11 +1326,11 @@ fn validate_patch(
             break;
         }
         for e in face_edges(patch, pf, false)? {
-            if crate::topology::edgeuse::p1::edge_is_lamina(patch, e)? {
-                if !on_loop_curve(k, patch, e, loop_curves, tol)? {
-                    good_patch = false;
-                    break;
-                }
+            if crate::topology::edgeuse::p1::edge_is_lamina(patch, e)?
+                && !on_loop_curve(k, patch, e, loop_curves, tol)?
+            {
+                good_patch = false;
+                break;
             }
         }
     }
@@ -1378,7 +1422,9 @@ fn rebuild_brep(
             let curves = edge_curves(source, loop_edges)?;
             planar_cap_rebuild(k, patch, &curves)
         }
-        RebuildBrepType::ExtendSurface => ext_surface_rebuild(k, patch, source, loop_edges, ext_dist),
+        RebuildBrepType::ExtendSurface => {
+            ext_surface_rebuild(k, patch, source, loop_edges, ext_dist)
+        }
         RebuildBrepType::None | RebuildBrepType::FromOtherBrep => Ok(()),
     }
 }
@@ -1604,13 +1650,14 @@ fn trim_patches(
 
             // Get one point in this patch face
             let (puv, ppt) = match crate::topology::face::p2::points_in_face(k, patch, pf, 1) {
-                Ok(p) => match (p.uv.first(), p.pv.first()) {
-                    (Some(&uv), Some(&pt)) => (uv, pt),
-                    _ => {
+                Ok(p) => {
+                    if let (Some(&uv), Some(&pt)) = (p.uv.first(), p.pv.first()) {
+                        (uv, pt)
+                    } else {
                         to_delete.push(pf);
                         continue;
                     }
-                },
+                }
                 Err(e) if e.is_unported() => return Err(e),
                 Err(_) => {
                     to_delete.push(pf);
@@ -1693,7 +1740,11 @@ pub fn fix_edge_chain_list(
     // SER_MSG(SM_ERR, "Edge chains cannot intersect (e.g., no figure-8 allowed)")
     let figure8 = sm_err;
     let common = |unused: &[EdgeId], local: &[EdgeId]| -> Vec<EdgeId> {
-        local.iter().copied().filter(|e| unused.contains(e)).collect()
+        local
+            .iter()
+            .copied()
+            .filter(|e| unused.contains(e))
+            .collect()
     };
 
     let mut chain_start_count = 0usize;
@@ -1836,7 +1887,8 @@ fn face_edges(b: &Brep, f: FaceId, outer_only: bool) -> Result<Vec<EdgeId>> {
 
 /// `SmFace::CalculateBoundingBox` (status ignored: the initialised box).
 fn face_box(k: &Kernel, b: &Brep, f: FaceId) -> Extent3d {
-    crate::query::face::p1::calculate_bounding_box(k, b, f, false).unwrap_or_else(|_| Extent3d::new())
+    crate::query::face::p1::calculate_bounding_box(k, b, f, false)
+        .unwrap_or_else(|_| Extent3d::new())
 }
 
 /// `SmEdge::CalculateBoundingBox(&box)` (status ignored: the initialised box).
@@ -1848,7 +1900,7 @@ fn edge_box(k: &Kernel, b: &Brep, e: EdgeId) -> Extent3d {
     crate::query::edge::calculate_bounding_box(k, b, e, req, false)
         .ok()
         .and_then(|bb| bb.normal)
-        .unwrap_or_else(Extent3d::new)
+        .unwrap_or_default()
 }
 
 /// The curve a face-intersection classification classifies (`GetCurve`).
@@ -1890,7 +1942,11 @@ fn remove_faces(k: &mut Kernel, b: &mut Brep, faces: &[FaceId]) -> Result<()> {
 
 /// `SmBrep::StitchAndOrient()` (defaults).
 fn stitch_and_orient(k: &mut Kernel, b: &mut Brep) -> Result<()> {
-    crate::topology::brep::p5::stitch_and_orient(k, b, &Default::default())
+    crate::topology::brep::p5::stitch_and_orient(
+        k,
+        b,
+        &crate::topology::brep::p5::StitchAndOrientOptions::default(),
+    )
 }
 
 /// `CreatePlanarFaceWith3DCurves(NULL, curves, tol, pNewFace)`.
@@ -1898,8 +1954,7 @@ fn planar_face(k: &mut Kernel, b: &mut Brep, curves: &[Curve], tol: f64) -> Resu
     let mut state = crate::topology::brep::p2::ArenaNotifyState::new(b);
     let mut env = state.env(None);
     let mut marks = Marks::default();
-    let this_face =
-        |f: FaceId| crate::topology::loopuse::notify_ref(EntityRef::Face(f));
+    let this_face = |f: FaceId| crate::topology::loopuse::notify_ref(EntityRef::Face(f));
     let mut fenv = crate::topology::brep::p8::FaceBuildEnv {
         env: &mut env,
         marks: &mut marks,
@@ -1911,17 +1966,18 @@ fn planar_face(k: &mut Kernel, b: &mut Brep, curves: &[Curve], tol: f64) -> Resu
 
 /// `SmMerge(ctx, a, b, tol).PiecewiseMerge(NULL, FALSE, TRUE, ..)`: `a` with `b`'s
 /// faces merged in, `b` (imprinted, not deleted) and the merge's status.
-fn piecewise_merge(
-    k: &mut Kernel,
-    a: Brep,
-    b: Brep,
-    tol: f64,
-) -> Result<(Brep, Brep, Result<()>)> {
+fn piecewise_merge(k: &mut Kernel, a: Brep, b: Brep, tol: f64) -> Result<(Brep, Brep, Result<()>)> {
     use crate::primitive::primitive_creation::model::PrimitiveModel;
     use crate::sweep::topology_sweep::access::SweepAccess;
     let mut model = PrimitiveModel::new(k, a);
     let other_id = model.add_brep(b)?;
-    let merge = model.new_merge(PrimitiveModel::MAIN, PrimitiveModel::MAIN, other_id, tol, 0.0)?;
+    let merge = model.new_merge(
+        PrimitiveModel::MAIN,
+        PrimitiveModel::MAIN,
+        other_id,
+        tol,
+        0.0,
+    )?;
     let merged = model.piecewise_merge(merge, false, true);
     model.delete_merge(merge);
     let stat = match merged {
