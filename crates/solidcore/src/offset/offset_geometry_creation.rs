@@ -136,7 +136,11 @@
 //!   `CreateTrimmedNURBSCurve` gives `NULL` where the port returns an error; any error
 //!   but [`SolidError::Unported`] skips the edge as `NULL` does, as does a failing
 //!   `GlobalSurfaceIntersect`. `SmBrep::ReplaceCurve` is written out in place
-//!   (`brep_replace_curve`, private), with `SmEdge::ClearUVCaches`.
+//!   (`brep_replace_curve`, private), with `SmEdge::ClearUVCaches`. The faces'
+//!   surfaces are intersected through a [`BrepFaceServices`] of the result (the face
+//!   context upstream's `SmSurface::GetFace` gives each surface's trimmed cache), made
+//!   for each edge: the face caches are not kept from one edge to the next, where
+//!   upstream's stay on the surfaces between curve replacements.
 //! - **Recursion.** None.
 
 use crate::blend::fillet_standard_solver::p1::CircularCrossSectionFsg;
@@ -1317,9 +1321,8 @@ fn exact_piece(k: &Kernel, marched: &Curve, exact: &[Curve], tol: f64) -> Result
 ///
 /// # Errors
 ///
-/// [`SolidError::Unported`] from the intersections (run through the B-rep's
-/// [`BrepFaceServices`], so each face's surface reaches its own cache); those of the
-/// evaluations, of the curve replacement and of `CreateUVTrimCurves`.
+/// [`SolidError::Unported`] from the intersections; those of the evaluations, of the
+/// curve replacement and of `CreateUVTrimCurves`.
 pub fn make_edges_on_analytics_exact(
     k: &mut Kernel,
     b: &mut Brep,
@@ -1351,34 +1354,29 @@ pub fn make_edges_on_analytics_exact(
         if !s1.is_analytic()? || !s2.is_analytic()? {
             continue;
         }
-        // The faces' own surfaces reach their faces' caches through the B-rep
-        // (`smsurf_GetSurfaceCache` of a face-owned surface): exact evaluation copies
-        // (same owner and cache slot), as the caches are made on the B-rep meanwhile.
+        // The faces' own surfaces: the SSI reaches each one's cache through its face
+        // (`SmSurface::GetFace`, a trimmed surface cache), so the evaluation copies
+        // (same owner and cache slot) are intersected through the B-rep's face
+        // services, the handles naming the two faces.
         let s1 = s1.clone_for_evaluation()?;
         let s2 = s2.clone_for_evaluation()?;
-        let (domain1, domain2) = (
-            s1.natural_uv_domain_with_nurb(k)?,
-            s2.natural_uv_domain_with_nurb(k)?,
-        );
+        let domain1 = s1.natural_uv_domain_with_nurb(k)?;
+        let domain2 = s2.natural_uv_domain_with_nurb(k)?;
         // The surfaces' own intersection: none found (tangent surfaces) leaves the edge.
-        let found = {
-            let mut services = BrepFaceServices::new(&mut *b);
-            s1.global_surface_intersect_with_context(
-                k,
-                [
-                    Some(CacheObject::Surface(f0)),
-                    Some(CacheObject::Surface(f1)),
-                ],
-                &mut services,
-                &domain1,
-                &s2,
-                &domain2,
-                use_surface_edges,
-                Some(ssi_tol),
-                Some(deg20_rad),
-            )
-        };
-        let exact = match found {
+        let exact = match s1.global_surface_intersect_with_context(
+            k,
+            [
+                Some(CacheObject::Surface(f0)),
+                Some(CacheObject::Surface(f1)),
+            ],
+            &mut BrepFaceServices::new(&mut *b),
+            &domain1,
+            &s2,
+            &domain2,
+            use_surface_edges,
+            Some(ssi_tol),
+            Some(deg20_rad),
+        ) {
             Ok(exact) => exact,
             Err(err @ SolidError::Unported { .. }) => return Err(err),
             Err(_) => continue,
