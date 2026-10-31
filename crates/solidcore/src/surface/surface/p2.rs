@@ -2382,8 +2382,10 @@ impl Surface {
                 s.base()
                     .step_inversion_on(k, self, anal_domain, point_on_surf, tol_3d, uv_guess)
             }
+            // SmCone::STEPInversion ignores crAnalDomain: it inverts over its own
+            // m_vAnalUVDomain (only the non-planar generator branch reads the domain)
             SurfaceKind::Cone(s) => s
-                .step_inversion_on_domain(k, anal_domain, point_on_surf, tol_3d, uv_guess)
+                .step_inversion(k, point_on_surf, tol_3d, uv_guess)
                 .and_then(|r| {
                     if r.inside {
                         Ok((r.uv, r.location))
@@ -2610,9 +2612,16 @@ impl Surface {
                     crate::surface::plane::p2::PlaneOwner::NoFace,
                 ],
             ),
-            SurfaceKind::Cone(s) => {
-                s.intersect_with_plane(k, uv_domain, plane, other_uv_domain, approx_tol_3d)
-            }
+            // the plane is taken as without owner; this cone's face tolerance is for WR-510
+            SurfaceKind::Cone(s) => s.intersect_with_plane_owned(
+                k,
+                uv_domain,
+                plane,
+                crate::surface::plane::p2::PlaneOwner::NoFace,
+                other_uv_domain,
+                approx_tol_3d,
+                [self.owner_zone_tol_3d(), None],
+            ),
             SurfaceKind::Sphere(s) => {
                 s.intersect_with_plane(k, uv_domain, plane, other_uv_domain, approx_tol_3d)
             }

@@ -14,7 +14,7 @@
 //! | `order_edgeuses_by_brep` (private) | `sm_OrderEdgeusesByBrep` |
 //! | [`api_shell_brep_full`], [`ShellCopyIdentities`] | `SmApiShellBrepFull` (and its working copy's identities) |
 //! | [`api_offset_brep_full`] | `SmApiOffsetBrepFull` |
-//! | [`offset_brep_simple`], [`shell_brep_simple`] | (not upstream) the API calls with their own notification identities |
+//! | [`offset_brep_simple`], [`shell_brep_simple`], [`local_operation_simple`] | (not upstream) the API calls with their own notification identities |
 //! | [`faceuse_offset`] | `SmOffsetGeometryCreation::FaceuseOffset` over the owned B-rep |
 //!
 //! Deviations: original B-reps and the kernel are explicit arguments, not retained
@@ -304,6 +304,16 @@ impl OffsetExecutive {
                 if !brep_is_manifold_solid(&shell)? {
                     return Err(SolidError::sm_err(OP_SHELL));
                 }
+            }
+            // Opt-in (WR-578): with the loop gaps closed, an offset of a solid that is still no
+            // closed solid is refused rather than handed back as it is (as WR-454's opt-in
+            // does for an inset): the gap closing must never turn upstream's refusal into a
+            // success on a broken body
+            if kernel.fixes.offset_closes_loop_gaps
+                && input_is_manifold
+                && !brep_is_manifold_solid(&shell)?
+            {
+                return Err(SolidError::sm_err(OP_SHELL));
             }
             if !brep_is_manifold_solid(&shell)? && !options.create_offset_solid {
                 return Ok(shell);
@@ -771,14 +781,15 @@ impl OffsetExecutive {
                 }
             }
 
-            // Not upstream (opt-in, fork tangency-labs/smlib 5d428ae and 7ff0a94): a local
-            // operation closes the loop gaps its step walls leave at their ends, then splits
+            // Not upstream (opt-in, fork tangency-labs/smlib 5d428ae and 7ff0a94): close the
+            // loop gaps the offset leaves (a local operation's step walls' ends, a solid
+            // offset's vertex where two consecutive edges' offsets run parallel), then split
             // the edges that run past a step wall's corner (after WR-531's caps below, in the
             // fork's order)
-            let step_walls = kernel.fixes.local_operation_step_walls
-                && self.operation() == OffsetOperation::LocalOperation;
-            if step_walls {
-                self.close_loop_gaps(kernel, notifications)?;
+            let local = self.operation() == OffsetOperation::LocalOperation;
+            let step_walls = kernel.fixes.local_operation_step_walls && local;
+            if kernel.fixes.offset_closes_loop_gaps || step_walls {
+                self.close_loop_gaps(kernel, original, notifications)?;
             }
 
             // Not upstream (WR-531), opt-in `Kernel::fixes.offset_point_vertex_caps` (the
@@ -1530,6 +1541,47 @@ pub fn offset_brep_simple(
     };
     let result = api_offset_brep_full(kernel, Some(original), options, &mut notifications);
     original.set_key(saved_key);
+    result
+}
+
+/// (not upstream) [`local_operation`](crate::topology::brep::local_operation::local_operation)
+/// with notification identities of its own, as [`offset_brep_simple`]: for a caller that
+/// keeps no notification stores (`SmBrep::LocalOperation` on a B-rep of the caller's).
+/// The B-rep's attributes stay on its faces as upstream's notifications carry them; its
+/// [`Brep::key`] is restored.
+///
+/// # Errors
+///
+/// Those of [`local_operation`](crate::topology::brep::local_operation::local_operation).
+pub fn local_operation_simple(
+    kernel: &mut Kernel,
+    b: &mut Brep,
+    faces: &[FaceId],
+    surfaces: Vec<crate::surface::surface::Surface>,
+) -> Result<()> {
+    let saved_key = b.key();
+    b.set_key(attributes::original_key(EntityRef::Brep(BrepId::from_index(0))).key);
+    let mut records = attributes::simple_records(b);
+    let mut store = AttributeStore::default();
+    let mut notifications = OffsetNotifications {
+        records: &mut records,
+        attributes: &mut store,
+        original_key_of: &attributes::original_key,
+        result_key_of: &attributes::result_key,
+        original_curve_ref: &attributes::original_curve,
+        result_curve_ref: &attributes::result_curve,
+        boolean_source_lists: &attributes::source_lists,
+        result_brep: attributes::result_key(EntityRef::Brep(BrepId::from_index(0))),
+        merge_identities: Some(&attributes::SimpleIdentities),
+    };
+    let result = crate::topology::brep::local_operation::local_operation(
+        kernel,
+        b,
+        faces,
+        surfaces,
+        &mut notifications,
+    );
+    b.set_key(saved_key);
     result
 }
 

@@ -54,12 +54,13 @@ use solidcore::topology::edgeuse::p1 as eu1;
 use solidcore::topology::shell::{ShellMembers, ShellType};
 use solidcore::topology::{
     Brep, Edge, EdgeId, Edgeuse, EdgeuseId, EdgeuseOwner, Face, FaceId, Faceuse, FaceuseId, Loop,
-    LoopId, Loopuse, LoopuseId, LoopuseStart, NamingScheme, ObjectHandle, Region, RegionId, Shell,
+    LoopId, Loopuse, LoopuseId, LoopuseStart, ObjectHandle, Region, RegionId, Shell,
     ShellId, Vertex, VertexId, Vertexuse, VertexuseId, VertexuseOwner,
 };
 use solidcore::{EntityRef, SolidError};
 use solidcore_ffi::units::topology_edgeuse_p1::{self as ffi, Op};
 
+use crate::util::trim_curve::put_trim_curve;
 use crate::{Case, HarnessError, Output, Rng, UnitDiff};
 
 /// The difftest runner.
@@ -1618,18 +1619,7 @@ fn eu_state(k: &Kernel, b: &Brep, eu: Option<EdgeuseId>, out: &mut Vec<f64>) -> 
     };
     out.push(1.0);
     let r = b.edgeuse(eu)?;
-    match r.uv_trim_curve.as_ref() {
-        None => out.push(-1.0),
-        Some(c) => {
-            out.push(1.0);
-            let ivl = c.natural_interval();
-            out.extend([ivl.min(), ivl.max()]);
-            for t in [ivl.min(), ivl.mid(), ivl.max()] {
-                let p = c.evaluate_point(k, t).unwrap_or(Vec3::UNDEF);
-                out.extend([p.x, p.y, p.z]);
-            }
-        }
-    }
+    put_trim_curve(k, out, r.uv_trim_curve.as_ref())?;
     // the curve's owner, as the shim's `g.find(6, uv->GetOwner())`
     out.push(crate::own_builder::uv_owner_index(b, eu, None));
     match r.drop_curve_fail.as_deref() {
@@ -1805,12 +1795,6 @@ fn run_rust_brep(k: &Kernel, b: &mut Brep, op: &OpIn) -> Result<Output, Fail> {
             fail,
         } => {
             let e = eid(*eu);
-            // the builders and the import name UV trim curve owners as Notify B-reps do
-            // (`own_builder::notify_edgeuse_owner`), so `SetUVTrimCurve` /
-            // `SetMemberUVTrimCurve` name the new owner the same way
-            if b.naming() == NamingScheme::Unknown {
-                b.set_naming(NamingScheme::Notify);
-            }
             let mate = match eu1::mate(b, e) {
                 Ok(m) => m,
                 Err(SolidError::InvalidInput { .. } | SolidError::PortInvariant { .. }) => {

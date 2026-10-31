@@ -644,6 +644,12 @@ pub struct FilletCorner {
     pub extended_surface_patch: bool,
     /// `m_dSetBackDist`.
     pub set_back_dist: f64,
+    /// `m_dEaseDist` (the fork's, tangency-labs/smlib `e74bbd3`, #1376): the length along
+    /// each edge before the setback over which each round's cross-section eases, by a C2
+    /// law, from its own to the curvature-continuous section (the `G2` blend curve at
+    /// thirds), and the corner's rail-rail curves meet the rails curvature-continuously.
+    /// `0.0` (the default) is none: the pinned behaviour.
+    pub ease_dist: f64,
     /// `m_dThisApproxTol3d`.
     pub approx_tol_3d: f64,
     /// `m_dTangencyTolRadians`.
@@ -960,6 +966,7 @@ impl FilletCorner {
             topology_adjusted: false,
             extended_surface_patch: true,
             set_back_dist: 0.0,
+            ease_dist: 0.0,
             approx_tol_3d,
             tangency_tol_radians,
             status: FilStatus::Unprocessed,
@@ -1630,8 +1637,15 @@ impl FilletCorner {
 
         // join the 2 curves (JoinWith is virtual: SmLine and SmEllipse override it)
         join_with(&*env.k, &mut curve1, true, &mut curve2, false)?;
-        env.pseudo.brep_mut().edge_mut(fe_on_extended_edge)?.curve = Some(curve1.clone());
-        env.pseudo.brep_mut().edge_mut(fe_on_edge)?.curve = Some(curve2);
+        // upstream joins the edges' curve objects in place: the edits go back into the
+        // same objects, which keep their edge owners
+        for (e, edited) in [(fe_on_extended_edge, curve1.clone()), (fe_on_edge, curve2)] {
+            let slot = &mut env.pseudo.brep_mut().edge_mut(e)?.curve;
+            match slot {
+                Some(c) => c.assign_edited(edited),
+                None => *slot = Some(edited),
+            }
+        }
 
         // Combine two edges
         self.edges.remove(found_index);
@@ -2981,8 +2995,9 @@ pub(super) fn unchecked_point(r: Result<Point3>) -> Result<Point3> {
 }
 
 /// `SmBSplineCurve::JoinWith` (virtual) on an edge's curve: the `SmLine` and `SmEllipse`
-/// overrides for those kinds, the B-spline join on the `SmBSplineCurve` part otherwise.
-fn join_with(
+/// overrides for those kinds, the B-spline join on the `SmBSplineCurve` part otherwise
+/// (shared with unit `blend.fillet_removal`).
+pub(crate) fn join_with(
     k: &Kernel,
     this: &mut Curve,
     this_at_end: bool,
