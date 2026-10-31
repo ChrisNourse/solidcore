@@ -484,11 +484,17 @@ pub struct UpstreamFixes {
     /// Planar path sweeps propagate mandatory operation failures and delete their
     /// owned temporary B-reps on failure (#483). Off by default for pinned compatibility.
     pub planar_path_sweep_statuses: bool,
-    /// Fillet corners return failed tangent/binormal evaluations, angles and UV
-    /// refinements before installing invalid geometry (#483). Off by default.
+    /// Fillet corners fail softly where a status upstream ignores would leave an unset
+    /// value, as the fork does (tangency-labs/smlib 66b02de; #483, changed by #2009):
+    /// `sm_TestG1Continuity` finds no tangency when an end tangent cannot be evaluated,
+    /// and `CheckAndFixDegeneracy` refines a vertex's UV point only with a computed one.
+    /// The binormal evaluations, the G1 angle and the Nx1 degeneracy test keep upstream's
+    /// handling, as the fork does. Off by default.
     pub fillet_corner_statuses: bool,
-    /// Fillet edge-domain preparation returns copy/trim failures instead of using
-    /// an untrimmed curve as the requested domain (#483). Off by default.
+    /// `sm_CheckEdgeCurveDomains` returns no trimmed curve (the edge's own curve is
+    /// used) when the copy cannot be made or trimmed, as the fork does
+    /// (tangency-labs/smlib 66b02de; #483, changed by #2009), instead of returning an
+    /// untrimmed copy as the requested domain. Off by default.
     pub fillet_edge_curve_domain_statuses: bool,
     /// Offset tangent-gap checks skip a sample they cannot evaluate instead of
     /// measuring an unset point, as the fork does (`HaveTangentGaps`, tangency-labs/smlib
@@ -513,6 +519,12 @@ pub struct UpstreamFixes {
     /// of one read unset (WR-663, #2009 group D; tangency-labs/smlib 7a35f33, 6997962,
     /// 666242b, 8843967, 8311f8e, 21dcf69). Off by default for pinned parity.
     pub query_statuses_pass_on: bool,
+    /// The fillet executive, solvers, corners and geometry pass on the statuses SMLib
+    /// drops: a failed solver load, orientation, list edit, copy, trim, interval edit,
+    /// evaluation, knot edit or split-face update returns its error instead of the fillet
+    /// carrying on and reporting success (WR-661, #2009 group B; tangency-labs/smlib
+    /// 873c7c9, 66b02de, 9b7cd48). Off by default for pinned parity.
+    pub fillet_statuses_pass_on: bool,
     /// `SmShell::IsInnerShellOf` passes on the statuses it ignores (fork 4038552): `UNSURE` when the outer shell's closure, the B-rep's box, the sample points or a crossing face's point or normal cannot be computed; a ray that cannot be solved or classified decides nothing and the next ray is tried (WR-497, #1473).
     pub shell_inner_shell_of_statuses: bool,
     /// `SmEdge::ReverseOrientation` returns a failed curve reversal's status before installing the interval, flipping the edge uses or deleting their UV trims, and an edge without curve keeps its interval (WR-260, #521; WR-260 addendum, tangency-labs/smlib 47507b6).
@@ -704,6 +716,12 @@ pub struct UpstreamFixes {
     pub ssi_no_reverse_of_empty_trace: bool,
     /// `SmAdvSurfaceIntersector::ComputeSingularityPoint` starts a curve at a singularity from the first singular direction that points into both domains, whose angle is the search's `dAngleMin`, before the later inside directions are searched for the one closest to the previous direction. Upstream leaves the output at `aSingDirections[0]`, so where the first inside direction is the nearest (or the only one) the curve starts along a direction that need not point into either domain (WR-512, #1522; the fork's tangency-labs/smlib#52).
     pub ssi_singular_start_inside_direction: bool,
+    /// `SmSurfaceIntersector::IsPointOnStartPoint` compares the squared distance of each
+    /// surface point with the squared tolerance instead of with the tolerance itself
+    /// (WR-51). Upstream compares `distance_squared < tol`, whose effective radius is
+    /// `sqrt(tol)`, so a small tolerance accepts points far farther apart than intended.
+    /// Off by default for pinned C++ parity.
+    pub point_on_start_point_squared_tolerance: bool,
     /// `SmSurfaceIntersector::StepBackFromSingularity` leaves each point its own curve tangent: the tangent at a surface pole comes from the pole's limit normal and is exact, and copying the previous point's over it bent the Hermite span into the pole (a line projected through a sphere's pole, r 20, came out 2.02e-4 off the sphere). Only the surface derivatives come from the stepped-back point (WR-550; the fork's tangency-labs/smlib@8d95600).
     pub ssi_pole_point_keeps_its_tangent: bool,
     /// `DoIntersection` traces the tangential intersection curves the marcher cannot follow (the surfaces touch along them, `n1 x n2 = 0`), and the crossing branches through the contact points where crossing curves meet, which it reports as touching points (WR-75; tangency-labs/smlib ef4ab25, e9fde8f, d8c61db, 1693c9d). `FindInteriorCurves` keeps the node pairs it skips for parallel normals as seeds.
