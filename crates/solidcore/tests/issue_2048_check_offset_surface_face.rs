@@ -57,7 +57,7 @@ fn quarter_cylinder(k: &mut Kernel) -> Brep {
     let mut b = new_brep(k, USE_DEFAULT, USE_DEFAULT).unwrap();
     {
         let this_face = |f: FaceId| -> ObjectRef { notify_ref(EntityRef::Face(f)) };
-        let mut state = ArenaNotifyState::new(&mut b);
+        let mut state = ArenaNotifyState::new(&b);
         let mut env = state.env(None);
         let mut marks = Marks::default();
         let mut fenv = FaceBuildEnv {
