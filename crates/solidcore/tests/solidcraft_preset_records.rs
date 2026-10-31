@@ -182,6 +182,22 @@ const FORK_RECORDS_WITHOUT_FIX: &[(&str, &str)] = &[
         "the fork's fix (smlib e4f1377) is not on the fork's main yet; its field `revolve_splits_curves_on_axis` is in `off` until it lands",
     ),
     (
+        "WR-595",
+        "the fork's fix (smlib f8fd83e) is not on the fork's main yet; its field `fillet_tangent_point_one_sided_step` is in `off` until it lands",
+    ),
+    (
+        "WR-603",
+        "the fork's fix (smlib 68fb916) is not on the fork's main yet; its field `fillet_trace_from_tangent_point_toward_next` is in `off` until it lands",
+    ),
+    (
+        "WR-609",
+        "the fork's fix (smlib a9277fd) shares its field `fillet_trace_reaches_rails` with WR-610 (smlib 6e77631), which is not on the fork's main yet; the field is in `off` until it lands",
+    ),
+    (
+        "WR-610",
+        "the fork's fix (smlib 6e77631) is not on the fork's main yet; its field `fillet_trace_reaches_rails` is in `off` until it lands",
+    ),
+    (
         "WR-594",
         "the fork's fix (smlib 5fdefb9) is not on the fork's main yet; its field `fillet_rails_meet_at_one_end_point` is in `off` until it lands",
     ),

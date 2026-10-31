@@ -229,6 +229,9 @@ solidcraft_preset! {
         fillet_trace_rejects_short_step, // WR-503, SolidCraft oracle
     ],
     off: [
+        fillet_tangent_point_one_sided_step, // WR-595: smlib f8fd83e is not on the fork's main yet
+        fillet_trace_from_tangent_point_toward_next, // WR-603: smlib 68fb916 is not on the fork's main yet
+        fillet_trace_reaches_rails, // WR-609, WR-610: smlib 6e77631 (with a9277fd) is not on the fork's main yet
         fillet_rails_meet_at_one_end_point, // WR-594: smlib 5fdefb9 is not on the fork's main yet
         delete_vertex_joins_seam_iso_curve, // WR-598: smlib 829b982 is not on the fork's main yet
         revolve_splits_curves_on_axis, // WR-590: smlib e4f1377 is not on the fork's main yet
