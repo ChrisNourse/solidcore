@@ -67,9 +67,9 @@
 //!   `SM_SUCCESS` (that is, `FALSE`) for a node outside its face and `NER`'s status
 //!   (non-zero: `TRUE`) for a missing patch; `sm_GoodDropResult` compares the guess and
 //!   result distances with swapped names (the opt-in
-//!   `Kernel::fixes.surface_drop_checks_actual_guess_distance` compares the actual
-//!   distances, WR-56); `FindDegenParamForDirection` compares a sample fraction with
-//!   the parameter `dS`.
+//!   `Kernel::fixes.good_drop_result_distances_in_order` compares them the right way round,
+//!   WR-56); `FindDegenParamForDirection` compares a sample fraction with the parameter
+//!   `dS`.
 //! - **Projection curve class.** `CreateParallelProjectionCurves` takes a [`Curve`] for
 //!   upstream's `const SmBSplineCurve&`; a curve outside the `SmBSplineCurve` classes
 //!   (B-spline, line, ellipse, hyperbola, parabola), which upstream's type rules out,
@@ -2629,8 +2629,11 @@ pub fn check_seam_drop<S: SurfaceEvaluate + ?Sized>(
 
 /// Whether a local point drop from `guess_uv` (solution value `sol_value` at
 /// `sol_uv`) converged well enough to skip the global solve (`sm_GoodDropResult`).
-/// With `Kernel::fixes.surface_drop_checks_actual_guess_distance` the final
-/// comparison uses the actual guess and result distances (WR-56, #1852).
+///
+/// Its last test, meant to refuse a result farther from the point than the guess,
+/// measures the two distances the wrong way round, as upstream; with
+/// `Kernel::fixes.good_drop_result_distances_in_order` (WR-56, the fork's
+/// tangency-labs/smlib@0b4de8c) it measures them the right way.
 ///
 /// # Errors
 ///
@@ -2700,12 +2703,13 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
     }
 
     // One more: if the solution 3d point is farther than the guess (upstream's names
-    // are swapped; the opt-in fix compares the actual distances).
+    // are swapped).
     let mut guess_3d = Vec3::UNDEF;
     if let Some(p) = ignored(surface.evaluate_point(k, guess_uv))? {
         guess_3d = p;
     }
-    let (dsq_guess, dsq_result) = if k.fixes.surface_drop_checks_actual_guess_distance {
+    let (dsq_guess, dsq_result) = if k.fixes.good_drop_result_distances_in_order {
+        // Not upstream (WR-56; tangency-labs/smlib@0b4de8c): each distance to its own point
         (
             pt_to_drop.distance_squared(guess_3d),
             pt_to_drop.distance_squared(srf_point),
@@ -3160,6 +3164,51 @@ mod tests {
         );
     }
 
+    /// WR-56 (#1852; the fork's tangency-labs/smlib@0b4de8c): the flat patch
+    /// (10 u, 10 v, 0) and the point (5, 5, 1), whose foot is (0.5, 0.5). A local result
+    /// 5e-4 along the patch from the foot passes every test before the last (the gap
+    /// along the patch is between 1e-4 and 1e-3); the last should take it when its guess
+    /// is farther from the point and refuse it when its guess is the foot itself.
+    #[test]
+    fn wr_56_good_drop_result_compares_the_right_distances() {
+        use crate::nurbs::math::{CPoint, NOW};
+
+        let net = vec![
+            vec![
+                CPoint::new(0.0, 0.0, 0.0, NOW),
+                CPoint::new(0.0, 10.0, 0.0, NOW),
+            ],
+            vec![
+                CPoint::new(10.0, 0.0, 0.0, NOW),
+                CPoint::new(10.0, 10.0, 0.0, NOW),
+            ],
+        ];
+        let knots = [0.0, 0.0, 1.0, 1.0];
+        let s = Surface::from(
+            BSplineSurface::from_data(1, 1, 1, 1, 3, 3, &net, &knots, &knots).unwrap(),
+        );
+        let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
+        let point = Point3::new(5.0, 5.0, 1.0);
+        let mut sol = SolutionEnd::new();
+        sol.solution_value = 1.0;
+        sol.parameters[0] = 0.500_05;
+        sol.parameters[1] = 0.5;
+        // the result is nearer the point than the guess (0.3, 0.5), farther than the
+        // guess (0.5, 0.5)
+        let nearer_guess = Point2::new(0.3, 0.5);
+        let foot_guess = Point2::new(0.5, 0.5);
+        let mut k = Kernel::default();
+        let good = |k: &Kernel, guess: Point2| {
+            good_drop_result(k, &s, &domain, point, guess, &sol).unwrap()
+        };
+        // upstream: the nearer result is refused, the farther one taken
+        assert!(!good(&k, nearer_guess));
+        assert!(good(&k, foot_guess));
+        k.fixes.good_drop_result_distances_in_order = true;
+        assert!(good(&k, nearer_guess));
+        assert!(!good(&k, foot_guess));
+    }
+
     #[test]
     fn plane_normal_is_axis() {
         let k = &Kernel::default();
@@ -3204,7 +3253,7 @@ mod tests {
     /// tangency-labs/solidcore#1852 (WR-56): `sm_GoodDropResult` stores the result
     /// distance in `dDsqGuess` and the guess distance in `dDsqResult`, so its last
     /// test rejects a drop that improved on the guess. The opt-in
-    /// `Kernel::fixes.surface_drop_checks_actual_guess_distance` compares the actual
+    /// `Kernel::fixes.good_drop_result_distances_in_order` compares the actual
     /// guess and result distances. Every case reaches the final comparison: the
     /// point lies on the plane, `1/2048` from the result along `S_u`, so `Fu` is
     /// `1/2048` and `Fv` is zero, past the residual early return and inside the
@@ -3237,7 +3286,7 @@ mod tests {
         assert!(good_drop_result(&k, &s, &domain, pt_to_drop, farther_guess, &sol).unwrap());
         assert!(good_drop_result(&k, &s, &domain, pt_to_drop, equal_guess, &sol).unwrap());
 
-        k.fixes.surface_drop_checks_actual_guess_distance = true;
+        k.fixes.good_drop_result_distances_in_order = true;
         assert!(good_drop_result(&k, &s, &domain, pt_to_drop, nearer_guess, &sol).unwrap());
         assert!(!good_drop_result(&k, &s, &domain, pt_to_drop, farther_guess, &sol).unwrap());
         assert!(good_drop_result(&k, &s, &domain, pt_to_drop, equal_guess, &sol).unwrap());
