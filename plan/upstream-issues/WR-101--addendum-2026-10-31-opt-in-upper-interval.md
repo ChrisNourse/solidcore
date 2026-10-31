@@ -13,7 +13,7 @@ Updates: WR-101
   `AddEdgeDefinition` overwrites the interval. When a definition is split, its first
   `AddEdgeDefinition` replaces the upper interval with the split definition's interval,
   which masks the empty value.
-- **Confirmed:** read at the pin (`3fd5b95`, `source/SMLib/src/SmProtoTopology.cpp:3037`-`3038`);
+- **Confirmed:** read at the pin (`3fd5b95`, `source/SMLib/src/SmProtoTopology.cpp:3047`-`3048` (archive line numbers with the older build; the pin has them at 3047-3048));
   the pinned behaviour is retained by default. The opt-in path intentionally differs from
   the pinned reference and was not compared against a C++ run.
 - **Opt-in:** `Kernel::fixes.proto_edge_split_upper_keeps_the_old_max`, default `false`.
@@ -26,4 +26,4 @@ Updates: WR-101
   (`crates/solidcore/src/topology/proto_topology/p2.rs`) asserts `[dT, dT]` without the
   flag, `[dT, old_max]` with it, the lower `[old_min, dT]` in both, and the unchanged
   refusals.
-- `addendum_options: Kernel::fixes.proto_edge_split_upper_keeps_the_old_max`
+`addendum_options: Kernel::fixes.proto_edge_split_upper_keeps_the_old_max`

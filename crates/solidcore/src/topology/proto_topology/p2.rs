@@ -3380,6 +3380,7 @@ mod tests {
     fn proto_edge_split_upper_interval_keeps_the_old_max() {
         for fixed in [false, true] {
             let mut k = Kernel::default();
+            assert!(!k.fixes.proto_edge_split_upper_keeps_the_old_max);
             k.fixes.proto_edge_split_upper_keeps_the_old_max = fixed;
             let mut geo = Geo::default();
             geo.curves.push(line([0.0, 0.0, 0.0], [2.0, 0.0, 0.0]));
@@ -3424,6 +3425,13 @@ mod tests {
             let new_pe = new_pe.expect("proto edge was split");
             assert!(new_pv.is_some());
             assert_eq!(m.proto_edge(new_pe).unwrap().num_edge_definitions(), 0);
+            // premise: the store-edge-definition branch that would overwrite the interval
+            // was refused by `cbiFudge`, so the upper child's interval is the one the split
+            // assigned, not one later overwritten by an edge definition.
+            assert!(
+                (old_max - dt).abs() < 10.0 * tol,
+                "the split must be within the proto edge's tolerance of its end"
+            );
 
             let lower = m.proto_edge(pe).unwrap().xsect_interval();
             assert_eq!((lower.min(), lower.max()), (old_min, dt));
