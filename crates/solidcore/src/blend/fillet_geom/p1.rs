@@ -4485,7 +4485,7 @@ mod tests {
         );
     }
 
-    /// gen1440 (blend.fillet_geom_p1): `SmBSplineCurve::Trim` maps
+    /// gen1440 (`blend.fillet_geom_p1`): `SmBSplineCurve::Trim` maps
     /// `SmTol::GetZoneTol3d(this)`, the rail edge's tolerance (zero on a fillet B-rep's
     /// rails), to find degenerate end spans. A tiny rail whose short last span is far
     /// below the system zone tolerance keeps its interior knot, as in C++; with the
