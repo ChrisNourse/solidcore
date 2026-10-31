@@ -1,4 +1,4 @@
-#### HANG-new. `SmFeatureExecutive::DoDefeature` does not finish on two fillet-face features
+#### HANG-52. `SmFeatureExecutive::DoDefeature` does not finish on two fillet-face features
 - **Severity:** Hang
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:1588`, `SmFeatureExecutive::DoDefeature`

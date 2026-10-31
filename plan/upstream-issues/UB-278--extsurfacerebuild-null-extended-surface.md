@@ -1,4 +1,4 @@
-#### UB-new. `SmFeatureExecutive::ExtSurfaceRebuild` dereferences a NULL extended surface
+#### UB-278. `SmFeatureExecutive::ExtSurfaceRebuild` dereferences a NULL extended surface
 - **Severity:** Crash / undefined behaviour
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:2061`, `SmFeatureExecutive::ExtSurfaceRebuild` (def. `:1922`)

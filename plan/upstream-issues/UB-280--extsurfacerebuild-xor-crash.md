@@ -1,4 +1,4 @@
-#### UB-new. `SmFeatureExecutive::ExtSurfaceRebuild` crashes on planar faces of `box_with_large_fillet.smb`
+#### UB-280. `SmFeatureExecutive::ExtSurfaceRebuild` crashes on planar faces of `box_with_large_fillet.smb`
 - **Severity:** Crash / undefined behaviour
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:1922`, `SmFeatureExecutive::ExtSurfaceRebuild`
@@ -8,7 +8,7 @@
   function pointer (`rip = 0`); the frames on the stack name `ExtSurfaceRebuild`,
   `SmMerge::PiecewiseMerge`, `SmMerge::ManifoldBoolean`, `SmFace::GetEdges` and
   `SmLoopuse::GetEdges`. Every surface extension the rebuild makes succeeds (the NULL
-  extension of `UB-new--extsurfacerebuild-null-extended-surface` is not involved).
+  extension of UB-278 is not involved).
 - **Trigger:** `box_with_large_fillet.smb`, `AddFeature({face 2})` (also faces 3 and 4) with
   `SM_RB_EXTEND_SURFACE, SM_RB_FROM_OTHER_BREP`, then `DoDefeature`; and `AddFeature({face 6},
   SM_RB_FROM_OTHER_BREP, SM_RB_FROM_OTHER_BREP)`, `DoDefeature`.

@@ -1,4 +1,4 @@
-#### UB-new. `SmFeatureExecutive::RestoreFeatures` removes the wrong entry and keeps a deleted feature
+#### UB-277. `SmFeatureExecutive::RestoreFeatures` removes the wrong entry and keeps a deleted feature
 - **Severity:** Crash / undefined behaviour
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:1629`, `SmFeatureExecutive::RestoreFeatures`.

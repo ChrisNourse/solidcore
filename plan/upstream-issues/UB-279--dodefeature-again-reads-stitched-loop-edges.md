@@ -1,4 +1,4 @@
-#### UB-new. A second `SmFeatureExecutive::DoDefeature` reads loop edges the first one's stitch deleted
+#### UB-279. A second `SmFeatureExecutive::DoDefeature` reads loop edges the first one's stitch deleted
 - **Severity:** Crash / undefined behaviour
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:892`, `SmFeature::BuildPatches` (and

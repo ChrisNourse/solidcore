@@ -67,13 +67,13 @@
 //!   virtual `operator==`).
 //! - **`RestoreFeatures`.** Upstream removes `m_sFeatures[ii]` while iterating a copy by
 //!   the same index, so after the first restored feature it drops the wrong entry and
-//!   keeps a deleted feature in its list (use after free; upstream issue
-//!   `restorefeatures-removes-wrong-entry-keeps-deleted-feature`). The port removes each
+//!   keeps a deleted feature in its list (use after free,
+//!   UB-277). The port removes each
 //!   restored feature itself; for at most one restored feature (the only case without
 //!   undefined behaviour upstream) the two agree.
 //! - **`ValidatePatch`'s intersection test.** Upstream compares
 //!   `sPtClass.GetClassType()` (the static class id) with `SM_PC_FACE`, so the test never
-//!   rejects a patch (WR-new, `plan/upstream-issues/`); the port keeps that: it runs the
+//!   rejects a patch (WR-640); the port keeps that: it runs the
 //!   face intersections (their status and edits count) and the classifications, and
 //!   accepts.
 //! - **Notifications.** B-rep edits run on arena-only notification records

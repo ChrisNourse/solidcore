@@ -1,4 +1,4 @@
-#### WR-new. `SmFeatureExecutive::ValidatePatch` never rejects a patch that crosses the B-rep
+#### WR-640. `SmFeatureExecutive::ValidatePatch` never rejects a patch that crosses the B-rep
 - **Severity:** Wrong result
 - **Area:** Blends and defeaturing
 - **Location:** `source/SMLib/src/SmFeatureExecutive.cpp:1851`, `SmFeatureExecutive::ValidatePatch` (def. `:1735`).
