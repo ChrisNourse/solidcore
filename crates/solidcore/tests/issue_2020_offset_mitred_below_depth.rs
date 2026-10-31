@@ -128,7 +128,11 @@ fn analytic_volume_matches_the_issue() {
         (-9.0, 1006.320628),
         (-9.5, 476.105890),
     ] {
-        assert!((analytic(d) - v).abs() < 1e-5, "d {d}: {} vs {v}", analytic(d));
+        assert!(
+            (analytic(d) - v).abs() < 1e-5,
+            "d {d}: {} vs {v}",
+            analytic(d)
+        );
     }
 }
 
@@ -138,13 +142,21 @@ fn solidcraft_flags_build_the_depths_below_the_rounds() {
         let k = &mut Kernel::default();
         solidcraft_flags(k);
         let (mut b, ex, r) = moved(k, d);
-        assert!(r.is_ok(), "d {d}: {r:?}: {:?} {}", ex.refusal(), ex.reason());
+        assert!(
+            r.is_ok(),
+            "d {d}: {r:?}: {:?} {}",
+            ex.refusal(),
+            ex.reason()
+        );
         assert_eq!(ex.refusal(), OffsetFacesRefusal::None, "d {d}");
         assert!(brep_is_manifold_solid(&b).unwrap(), "d {d}");
         assert_eq!(b.face_list().len(), faces, "d {d}");
         let v = volume(k, &mut b);
         let want = analytic(d);
-        assert!((v - want).abs() <= 1e-6 * want, "d {d}: V {v} vs analytic {want}");
+        assert!(
+            (v - want).abs() <= 1e-6 * want,
+            "d {d}: V {v} vs analytic {want}"
+        );
     }
 }
 
@@ -155,8 +167,17 @@ fn solidcraft_flags_refuse_minus_nine_typed() {
     solidcraft_flags(k);
     let (_, ex, r) = moved(k, -9.0);
     assert!(r.is_err());
-    assert_eq!(ex.refusal(), OffsetFacesRefusal::NotPutBack, "{}", ex.reason());
-    assert!(ex.reason().starts_with("putting back a blend"), "{}", ex.reason());
+    assert_eq!(
+        ex.refusal(),
+        OffsetFacesRefusal::NotPutBack,
+        "{}",
+        ex.reason()
+    );
+    assert!(
+        ex.reason().starts_with("putting back a blend"),
+        "{}",
+        ex.reason()
+    );
 }
 
 #[test]
@@ -178,7 +199,12 @@ fn flags_off_put_back_failures_are_typed() {
         let k = &mut Kernel::default();
         let (_, ex, r) = moved(k, d);
         assert!(r.is_err(), "d {d}");
-        assert_eq!(ex.refusal(), OffsetFacesRefusal::NotPutBack, "d {d}: {}", ex.reason());
+        assert_eq!(
+            ex.refusal(),
+            OffsetFacesRefusal::NotPutBack,
+            "d {d}: {}",
+            ex.reason()
+        );
         assert!(ex.reason().contains(comment), "d {d}: {}", ex.reason());
     }
 }
@@ -188,11 +214,19 @@ fn flags_off_build_the_depths_above_the_floor() {
     for (d, faces) in [(-6.9, 10), (-7.0, 6)] {
         let k = &mut Kernel::default();
         let (mut b, ex, r) = moved(k, d);
-        assert!(r.is_ok(), "d {d}: {r:?}: {:?} {}", ex.refusal(), ex.reason());
+        assert!(
+            r.is_ok(),
+            "d {d}: {r:?}: {:?} {}",
+            ex.refusal(),
+            ex.reason()
+        );
         assert_eq!(b.face_list().len(), faces, "d {d}");
         let v = volume(k, &mut b);
         let want = analytic(d);
-        assert!((v - want).abs() <= 1e-6 * want, "d {d}: V {v} vs analytic {want}");
+        assert!(
+            (v - want).abs() <= 1e-6 * want,
+            "d {d}: V {v} vs analytic {want}"
+        );
     }
 }
 
