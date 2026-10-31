@@ -74,7 +74,7 @@
 //!   `CreateExtendedSurface`, where upstream never returns
 //!   (`plan/upstream-issues.md` HANG-18).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::curve::curve::p2::is_curve_class;
 use crate::curve::curve::{p8::CurveIntersectOptions, Curve, CurveKind};
@@ -851,18 +851,172 @@ impl ArenaNotifyState {
     }
 }
 
+/// The tag of a copy's source identities ([`copy_source_ref`]): above the arena kinds
+/// (`kind << 32`, kinds up to 10) and below the kernel's keys.
+const COPY_SOURCE_TAG: u64 = 1 << 48;
+
+/// The identity of `e` as the source object of a copy between two B-reps
+/// ([`CopyNotifyState`]): its [`notify_ref`](crate::topology::loopuse::notify_ref) key
+/// tagged, so that it differs from every destination object's key.
+#[must_use]
+pub fn copy_source_ref(e: EntityRef) -> ObjectRef {
+    let r = crate::topology::loopuse::notify_ref(e);
+    ObjectRef {
+        type_code: r.type_code,
+        key: ObjectKey(r.key.0 | COPY_SOURCE_TAG),
+    }
+}
+
+/// The entity a [`copy_source_ref`] key names, if any.
+fn entity_of_copy_source_key(key: ObjectKey) -> Option<EntityRef> {
+    if key.0 & COPY_SOURCE_TAG == 0 {
+        return None;
+    }
+    crate::topology::loopuse::entity_of_notify_key(ObjectKey(key.0 & !COPY_SOURCE_TAG))
+}
+
+/// The notification state of a copy from one B-rep into another (`CopyFaces`), holding
+/// both B-reps' own attributes ([`Brep::add_attribute`]) so that the copy's
+/// notifications propagate them with SMLib's handlers (`SmAObject::Notify`: each
+/// attribute's `Copy` behaviour onto the new object), as upstream's live on the objects.
+/// Destination objects are keyed by
+/// [`notify_ref`](crate::topology::loopuse::notify_ref) (the [`NotifyEnv::key_of`] of
+/// [`Self::env`]), source objects by [`copy_source_ref`]. Each B-rep holds no attributes
+/// until [`Self::restore_attributes`] gives them back. (not upstream: an attribute that
+/// both B-reps' objects list afterwards, a reference behaviour's, is one object upstream;
+/// here each B-rep gets its own.)
+#[derive(Debug, Default)]
+pub struct CopyNotifyState {
+    /// Each object's default `SmTopology` record.
+    pub records: crate::topology::topology::NotifyRecords,
+    /// Both B-reps' attributes.
+    pub attributes: AttributeStore,
+}
+
+impl CopyNotifyState {
+    /// A default record for every object of `src` (source identities) and `dest`, and
+    /// both B-reps' attributes. Pass an empty `dest` for a copy constructor.
+    ///
+    /// # Errors
+    /// Those of [`seed_brep_attributes`] (a B-rep store that names no object).
+    pub fn with_attributes_of(src: &mut Brep, dest: &mut Brep) -> Result<Self> {
+        let mut state = Self::default();
+        // (the destination's records, and under the destination identities those of
+        // `src`'s arena ids as well, as `ArenaNotifyState::new(dest)` + `seed(src)`: the
+        // copy's new objects are notified before anything else names them)
+        let mut dest_state = ArenaNotifyState::new(dest);
+        dest_state.seed(src);
+        state.records = dest_state.records;
+        for e in brep_entities(src) {
+            state.records.or_default(copy_source_ref(e).key);
+        }
+        seed_brep_attributes(
+            &mut state.attributes,
+            dest.take_attributes(),
+            &crate::topology::loopuse::notify_ref,
+        )?;
+        seed_brep_attributes(
+            &mut state.attributes,
+            src.take_attributes(),
+            &copy_source_ref,
+        )?;
+        Ok(state)
+    }
+
+    /// The [`NotifyEnv`] over this state, keyed by the destination identities and
+    /// notifying through `context` (as [`ArenaNotifyState::env`]).
+    pub fn env<'a>(
+        &'a mut self,
+        context: Option<&'a mut crate::geom::context::Context>,
+    ) -> NotifyEnv<'a> {
+        NotifyEnv {
+            records: &mut self.records,
+            attributes: &mut self.attributes,
+            context,
+            key_of: &crate::topology::loopuse::notify_ref,
+        }
+    }
+
+    /// Gives each B-rep the attributes this state's notifications left on its live
+    /// objects (pair of [`Self::with_attributes_of`]); the lists of deleted objects are
+    /// cleared, as upstream's destructors do.
+    ///
+    /// # Errors
+    /// None in practice.
+    pub fn restore_attributes(&mut self, src: &mut Brep, dest: &mut Brep) -> Result<()> {
+        let store = core::mem::take(&mut self.attributes);
+        let mut for_src = store.clone();
+        let mut for_dest = store;
+        give_attributes(src, &mut for_src, &entity_of_copy_source_key)?;
+        give_attributes(
+            dest,
+            &mut for_dest,
+            &crate::topology::loopuse::entity_of_notify_key,
+        )?;
+        src.set_attributes(for_src);
+        dest.set_attributes(for_dest);
+        Ok(())
+    }
+}
+
+/// Every object of `b` that a notification may name (the B-rep and its arena objects).
+fn brep_entities(b: &Brep) -> Vec<EntityRef> {
+    let mut all = vec![EntityRef::Brep(BrepId::from_index(0))];
+    all.extend(b.regions().iter().map(|(x, _)| EntityRef::Region(x)));
+    all.extend(b.shells().iter().map(|(x, _)| EntityRef::Shell(x)));
+    all.extend(b.faceuses().iter().map(|(x, _)| EntityRef::Faceuse(x)));
+    all.extend(b.faces().iter().map(|(x, _)| EntityRef::Face(x)));
+    all.extend(b.loopuses().iter().map(|(x, _)| EntityRef::Loopuse(x)));
+    all.extend(b.loops().iter().map(|(x, _)| EntityRef::Loop(x)));
+    all.extend(b.edgeuses().iter().map(|(x, _)| EntityRef::Edgeuse(x)));
+    all.extend(b.edges().iter().map(|(x, _)| EntityRef::Edge(x)));
+    all.extend(b.vertexuses().iter().map(|(x, _)| EntityRef::Vertexuse(x)));
+    all.extend(b.vertices().iter().map(|(x, _)| EntityRef::Vertex(x)));
+    all
+}
+
+/// Keeps in `store` the lists of `b`'s live objects that `decode` names (renamed to their
+/// [`notify_ref`](crate::topology::loopuse::notify_ref) keys), clears the others, and
+/// drops the attributes no remaining list names.
+fn give_attributes(
+    b: &Brep,
+    store: &mut AttributeStore,
+    decode: &dyn Fn(ObjectKey) -> Option<EntityRef>,
+) -> Result<()> {
+    if !store.attributed_objects().is_empty() {
+        let listed = b.listed_entities();
+        store.retain_rekeyed(&|key| {
+            decode(key)
+                .filter(|&e| b.still_has(&listed, e))
+                .map(|e| crate::topology::loopuse::notify_ref(e).key)
+        })?;
+        store.retain_listed();
+    }
+    Ok(())
+}
+
 /// (not upstream: upstream attributes live on the objects.) Moves `source`, a B-rep's
 /// own attribute store (keyed by [`crate::topology::loopuse::notify_ref`]), into an
 /// operation's `store` under that operation's identities `key_of` of the same objects.
 ///
 /// # Errors
-/// [`SolidError::InvalidInput`] for a list whose key names no object; a store that
-/// cannot grow.
+/// [`SolidError::InvalidInput`] for a list whose key names no object, or for two lists
+/// `key_of` gives one key (see [`distinct_listed_keys`]); a store that cannot grow.
 pub(crate) fn seed_brep_attributes(
     store: &mut AttributeStore,
     source: AttributeStore,
     key_of: &dyn Fn(EntityRef) -> ObjectRef,
 ) -> Result<()> {
+    let mut named = BTreeSet::new();
+    for key in source.attributed_objects() {
+        if let Some(e) = crate::topology::loopuse::entity_of_notify_key(key) {
+            if !named.insert(key_of(e).key) {
+                return Err(shared_attribute_key(
+                    "topology::brep::p2::seed_brep_attributes",
+                ));
+            }
+        }
+    }
     store.absorb(source, &|key| {
         crate::topology::loopuse::entity_of_notify_key(key)
             .map(|e| key_of(e).key)
@@ -903,7 +1057,8 @@ pub(crate) fn restore_decoded_attributes(
 /// `store` itself is left as it is.
 ///
 /// # Errors
-/// None in practice.
+/// [`SolidError::InvalidInput`] when `key_of` gives two live objects the key of a list
+/// in `store` ([`distinct_listed_keys`]); `b` is then left as it is.
 pub(crate) fn restore_keyed_attributes(
     b: &mut Brep,
     store: &AttributeStore,
@@ -913,15 +1068,49 @@ pub(crate) fn restore_keyed_attributes(
         b.set_attributes(AttributeStore::default());
         return Ok(());
     }
-    let names: BTreeMap<ObjectKey, EntityRef> = live_entities(b)
-        .into_iter()
-        .map(|e| (key_of(e).key, e))
-        .collect();
+    let names = distinct_listed_keys(
+        b,
+        key_of,
+        &|key| !store.attributes(key).is_empty(),
+        "topology::brep::p2::restore_keyed_attributes",
+    )?;
     restore_decoded_attributes(b, store.clone(), &|key| names.get(&key).copied())
 }
 
+/// The refusal of a naming that gives two objects one attribute key.
+const fn shared_attribute_key(operation: &'static str) -> SolidError {
+    SolidError::invalid_input(operation, "the naming gives two objects one attribute key")
+}
+
+/// (not upstream: upstream's attributes live on the objects.) `b`'s live objects by
+/// their key under `key_of` (the last one named for a key no list holds), refusing a
+/// naming that gives two of them the key of an attribute list (`listed`): stores key
+/// by [`ObjectKey`] alone, so such a list would silently pass to one of them and the
+/// other would lose its own. Arena identities ([`brep_cache::arena_identity`], and so
+/// [`Brep::owner_identity`] under any scheme but [`crate::topology::NamingScheme::Notify`])
+/// are such a naming: a face, an edge and a vertex of one index share their key;
+/// [`crate::topology::loopuse::notify_ref`] is not.
+///
+/// # Errors
+/// [`SolidError::InvalidInput`] for such a key.
+pub(crate) fn distinct_listed_keys(
+    b: &Brep,
+    key_of: &dyn Fn(EntityRef) -> ObjectRef,
+    listed: &dyn Fn(ObjectKey) -> bool,
+    operation: &'static str,
+) -> Result<BTreeMap<ObjectKey, EntityRef>> {
+    let mut names = BTreeMap::new();
+    for e in live_entities(b) {
+        let key = key_of(e).key;
+        if names.insert(key, e).is_some() && listed(key) {
+            return Err(shared_attribute_key(operation));
+        }
+    }
+    Ok(names)
+}
+
 /// Every live object of `b` that can carry attributes (all but the B-rep itself).
-fn live_entities(b: &Brep) -> Vec<EntityRef> {
+pub(crate) fn live_entities(b: &Brep) -> Vec<EntityRef> {
     let mut all = Vec::new();
     all.extend(b.regions().iter().map(|(x, _)| EntityRef::Region(x)));
     all.extend(b.shells().iter().map(|(x, _)| EntityRef::Shell(x)));

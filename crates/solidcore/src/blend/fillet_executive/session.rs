@@ -59,9 +59,10 @@ use super::p2::{EdgeMapAccess, FilletParameters, FilletParametersAccess, SolverS
 use super::p3::{
     BrepCreationAccess, CornerAdjustmentAccess, CornerEdgeAccess, CornerVertexAccess, CornerView,
     ErrorInfo, FaceConstructionAccess, FaceShrinkAccess, FaceStitchAccess, FilletExecutive,
-    RailClassificationAccess, RailTrimAccess, SolverGeometryAccess, StitchAttempt, VertexEntry,
+    OpenEnd, RailClassificationAccess, RailTrimAccess, SolverGeometryAccess, StitchAttempt,
+    VertexEntry,
 };
-use crate::blend::fillet_corner::p1::LawIntervalSolvers;
+use crate::blend::fillet_corner::p1::{EndRibDrop, LawIntervalSolvers};
 use crate::blend::fillet_corner::p3::{
     CornerFilletBrep, CornerPatchEnv, CornerSolverStore, ExecutiveErrorObject, FilletCorner,
     FilletCornerKind, Nx2AdjustContext, TangentSplitEnv, TangentSplitOps,
@@ -95,14 +96,18 @@ use crate::topology::{Brep, EdgeId, EdgeuseId, FaceId, VertexId};
 
 mod big_radius;
 mod classification;
+mod cliff_overflow;
 mod concave_nxn;
 mod corner_marks;
 mod crossing_rails;
+mod ease;
 pub(crate) mod finish;
 mod original_merge;
 mod original_trim;
+mod overflow_first;
 mod piecewise;
 mod surface;
+mod trace_reach;
 pub use original_trim::{OriginalSurfaceDeletion, OriginalSurfaceSelection};
 
 const OP: &str = "blend::fillet_executive::session";
@@ -1512,6 +1517,57 @@ impl<'target> FilletSession<'target> {
         )
     }
 
+    /// The per-edge `SetFilletParameters` overload (`SmFilletExecutive.cpp:865`) with a
+    /// solver type per edge (`radius_types`, one per edge or one for all): what the
+    /// SolidCraft fork's `SmOffsetFacesExecutive` calls on a bare `SmFilletExecutive`
+    /// (not upstream's API wrappers: no `SetDoGlobalMerge`), default tolerances and no
+    /// laws.
+    ///
+    /// # Errors
+    /// Native invalid input for an empty edge list or mismatched list sizes; real
+    /// parameter/constructor/loader errors.
+    #[allow(clippy::too_many_arguments)] // the native overload's parameters
+    pub(crate) fn prepare_per_edge_solvers(
+        &mut self,
+        k: &mut Kernel,
+        edges: &[EdgeId],
+        sizes: &[f64],
+        xsect_types: &[FilletSurfaceGeneratorType],
+        radius_types: &[FilletSolverType],
+        continuity: u32,
+        thumbweight: f64,
+    ) -> Result<()> {
+        if edges.is_empty() {
+            return Err(SolidError::Upstream {
+                operation: OP,
+                code: crate::error::SM_ERR_INVALID_INPUT,
+                entity: None,
+            });
+        }
+        let edges = edges
+            .iter()
+            .map(|id| FilletObject::Topology(FilletBody::Target, EntityRef::Edge(*id)))
+            .collect::<Vec<_>>();
+        self.executive.set_fillet_parameters(
+            k,
+            &mut self.objects,
+            &FilletParameters {
+                brep: Some(FilletObject::Body(FilletBody::Target)),
+                edges: &edges,
+                xsect_types,
+                radius_types,
+                radius_values: sizes,
+                var_rad_laws: None,
+                approx_tol: -1.0,
+                ang_tol_deg: -1.0,
+                tan_tol_deg: -1.0,
+                xsect_tol: -1.0,
+                continuity,
+                thumbweight,
+            },
+        )
+    }
+
     #[allow(clippy::too_many_arguments)] // the native overload's parameters
     fn prepare_per_edge(
         &mut self,
@@ -2063,6 +2119,24 @@ impl<'target> FilletSession<'target> {
         Ok(())
     }
 
+    /// `SmFilletCorner::SetEaseDist` on one live corner (the fork's, tangency-labs/smlib
+    /// `e74bbd3`, #1376): over `distance` along each edge before the corner's setback, each
+    /// round's cross-section eases from its own into the curvature-continuous one, and the
+    /// corner's rail-rail curves meet the rails curvature-continuously. `0.0` (the default)
+    /// is none, the pinned behaviour; it acts only with a setback
+    /// ([`Self::set_corner_setback`]).
+    ///
+    /// # Errors
+    /// An unresolved corner identity.
+    pub fn set_corner_ease(&mut self, id: FilletCornerId, distance: f64) -> Result<()> {
+        self.objects
+            .corners
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| invalid("corner is not live in this session"))?
+            .ease_dist = distance;
+        Ok(())
+    }
+
     /// `SmFilletCorner::SetBevel` on one live corner.
     ///
     /// # Errors
@@ -2101,6 +2175,9 @@ impl<'target> FilletSession<'target> {
         )
     }
 }
+
+/// The operation of the fork's `SmFilletExecutive::NoteOpenEnd` (WR-631).
+const OP_NOTE_OPEN_END: &str = "blend::fillet_executive::session::note_open_end";
 
 impl CornerEdgeAccess<FilletObject> for SessionObjects<'_> {
     fn edges_adjust_tangent(
@@ -2171,8 +2248,28 @@ impl CornerEdgeAccess<FilletObject> for SessionObjects<'_> {
         let corner = corners
             .get_mut(id.0 as usize)
             .ok_or_else(|| invalid("corner is not live"))?;
-        // WR-303: the Nx1 corner's end rib hands the round to the global merge.
-        if corner.drop_end_rib_for_global_merge(k, target, pseudo)? {
+        // WR-303: the Nx1 corner's end rib hands the round to the global merge; in a
+        // cliff overflow (WR-631) the end is left open, noted for the subtraction.
+        let cliff_overflow = executive.cliff_overflow;
+        let mut open_ends = Vec::new();
+        let mut note_open_end = |eu, vertex, end_face| -> Result<()> {
+            // GetFilletSolverOfEdgeuse(pFilEdgeuse), then NoteOpenEnd
+            let solver = executive
+                .fillet_solver_of_edgeuse(FilletObject::Topology(
+                    FilletBody::Target,
+                    EntityRef::Edgeuse(eu),
+                ))
+                .ok_or_else(|| SolidError::null_pointer(OP_NOTE_OPEN_END))?;
+            open_ends.push(OpenEnd {
+                solver,
+                vertex: FilletObject::Topology(FilletBody::Target, EntityRef::Vertex(vertex)),
+                end_face: FilletObject::Topology(FilletBody::Target, EntityRef::Face(end_face)),
+            });
+            Ok(())
+        };
+        let dropped = corner.drop_end_rib(k, target, pseudo, cliff_overflow, &mut note_open_end)?;
+        executive.open_ends.append(&mut open_ends);
+        if dropped == EndRibDrop::GlobalMerge {
             executive.options.global_merge = true;
         }
         let mut context = SessionCornerEdgeContext {
@@ -2563,6 +2660,22 @@ impl BrepCreationAccess<FilletObject> for SessionObjects<'_> {
             k,
             self.target,
         )
+    }
+
+    fn creation_extend_trace_to_its_rails(
+        &mut self,
+        k: &mut Kernel,
+        solver: FilletObject,
+    ) -> Result<()> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        let current = self
+            .solvers
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| invalid("solver is not live in this session"))?;
+        trace_reach::extend_trace_to_its_rails(k, self.target, current)
     }
 }
 
@@ -3349,6 +3462,21 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             EntityRef::Edge(edge),
         ))
     }
+    fn geometry_overflow_edge(&self, solver: FilletObject) -> Result<Option<FilletObject>> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        // the fork adds the edge only when the solver has a first edge use
+        let Some(edgeuse) = self.solver(id)?.base().edgeuse(0)? else {
+            return Ok(None);
+        };
+        let edge = crate::topology::edgeuse::p1::edge(self.target, edgeuse)?
+            .ok_or_else(|| invalid("solver edgeuse without edge"))?;
+        Ok(Some(FilletObject::Topology(
+            FilletBody::Target,
+            EntityRef::Edge(edge),
+        )))
+    }
     fn geometry_rails_fit(
         &mut self,
         k: &mut Kernel,
@@ -3374,6 +3502,59 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             &mut self.pseudo,
             &mut context,
         )
+    }
+    fn geometry_rails_fit_judged(
+        &mut self,
+        k: &mut Kernel,
+        solver: FilletObject,
+        executive: &FilletExecutive<FilletObject>,
+    ) -> Result<crate::blend::fillet_solver::p5::RailsFit> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        let solver = self
+            .solvers
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| invalid("solver is not live in this session"))?;
+        let mut context = SessionRollOver {
+            corners: &mut self.corners,
+            executive,
+        };
+        FilletSolver::rails_fit_their_faces_judged_with_ops(
+            live_solver_ops(solver),
+            k,
+            self.target,
+            &mut self.pseudo,
+            &mut context,
+            true,
+        )
+    }
+    fn geometry_blend_adds_material(
+        &mut self,
+        k: &mut Kernel,
+        solver: FilletObject,
+    ) -> Result<bool> {
+        // sm_BlendAddsMaterial: IsConcaveEdge of the solver's edge
+        let FilletObject::Topology(FilletBody::Target, EntityRef::Edge(edge)) =
+            self.geometry_edge(solver)?
+        else {
+            return Err(invalid("solver edge is not a target edge"));
+        };
+        crate::blend::fillet_solver::p5::is_concave_edge(k, self.target, edge)
+    }
+    fn geometry_generator_is_linear(&self, solver: FilletObject) -> Result<bool> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        let solver = self
+            .solvers
+            .get(id.0 as usize)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| invalid("solver is not live in this session"))?;
+        Ok(solver.base().fsg.as_ref().is_some_and(|fsg| {
+            fsg.fillet_surface_generator_type() == FilletSurfaceGeneratorType::Linear
+        }))
     }
     fn geometry_faces_outlast(&mut self, k: &mut Kernel, solvers: &[FilletObject]) -> Result<bool> {
         use crate::blend::fillet_geom::p1::FilletGeomType;
@@ -3446,6 +3627,13 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             }
         }
         Ok(true)
+    }
+    fn geometry_ease_set_back_sections(
+        &mut self,
+        k: &mut Kernel,
+        corners: &[FilletObject],
+    ) -> Result<()> {
+        self.ease_set_back_sections(k, corners)
     }
     fn geometry_bands_clear_other_rails(
         &mut self,

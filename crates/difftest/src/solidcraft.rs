@@ -1419,24 +1419,26 @@ fn measure(k: &Kernel, b: &mut Brep) -> Result<Measured, SolidError> {
     })
 }
 
-/// Turns on the `UpstreamFixes` field `name` a case asks for (`solidcraft`: the whole
-/// SolidCraft preset).
+/// Turns on the `UpstreamFixes` field `name` a case asks for.
 fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
-    // The whole SolidCraft preset (`UpstreamFixes::solidcraft`); it replaces the fixes
-    // set so far, so a case lists it first.
-    if name == "solidcraft" {
-        k.fixes = solidcore::kernel::UpstreamFixes::solidcraft();
-        return Ok(());
-    }
     let field = match name {
         "sweep_frame_on_planar_path_normal" => &mut k.fixes.sweep_frame_on_planar_path_normal,
+        "imprint_extends_edge_to_proto_vertex" => &mut k.fixes.imprint_extends_edge_to_proto_vertex,
+        "imprint_extension_keeps_analytic_curve" => {
+            &mut k.fixes.imprint_extension_keeps_analytic_curve
+        }
         "delete_vertex_joins_seam_iso_curve" => &mut k.fixes.delete_vertex_joins_seam_iso_curve,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
+        "fillet_cleanup_removes_input_slits" => &mut k.fixes.fillet_cleanup_removes_input_slits,
+        "cover_wraps_across_closed_seam" => &mut k.fixes.cover_wraps_across_closed_seam,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
         "fillet_refuse_ball_not_fitting" => &mut k.fixes.fillet_refuse_ball_not_fitting,
         "fillet_torus_rail_on_axis" => &mut k.fixes.fillet_torus_rail_on_axis,
         "cone_parallel_line_midpoint" => &mut k.fixes.cone_parallel_line_midpoint,
+        "fillet_trace_from_tangent_point_toward_next" => {
+            &mut k.fixes.fillet_trace_from_tangent_point_toward_next
+        }
         "analytic_copy_keeps_parameterization" => &mut k.fixes.analytic_copy_keeps_parameterization,
         "precise_properties_body_length_scale" => &mut k.fixes.precise_properties_body_length_scale,
         "boolean_wire_edge_keeps_faceuse_shell" => {
@@ -1453,9 +1455,18 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "stitch_solid_nests_cavities" => &mut k.fixes.stitch_solid_nests_cavities,
         "sphere_small_circle_not_touching" => &mut k.fixes.sphere_small_circle_not_touching,
         "curve_tight_box_interval_knots" => &mut k.fixes.curve_tight_box_interval_knots,
+        "fillet_tangent_point_one_sided_step" => &mut k.fixes.fillet_tangent_point_one_sided_step,
         "fillet_rails_meet_at_one_end_point" => &mut k.fixes.fillet_rails_meet_at_one_end_point,
         "fillet_nx1_tangent_side_edge" => &mut k.fixes.fillet_nx1_tangent_side_edge,
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
+        "fillet_3x2_mixed_concave_side_edge" => &mut k.fixes.fillet_3x2_mixed_concave_side_edge,
+        "fillet_3x2_tangent_side_edge_roles" => &mut k.fixes.fillet_3x2_tangent_side_edge_roles,
+        "fillet_nx1_tangent_side_edge_same_convexity" => {
+            &mut k.fixes.fillet_nx1_tangent_side_edge_same_convexity
+        }
+        "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
+        "fillet_rail_end_on_continued_surface" => &mut k.fixes.fillet_rail_end_on_continued_surface,
+        "fillet_cliff_overflow" => &mut k.fixes.fillet_cliff_overflow,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
