@@ -1419,19 +1419,17 @@ fn measure(k: &Kernel, b: &mut Brep) -> Result<Measured, SolidError> {
     })
 }
 
-/// Turns on the `UpstreamFixes` field `name` a case asks for (`solidcraft`: the whole
-/// SolidCraft preset).
+/// Turns on the `UpstreamFixes` field `name` a case asks for.
 fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
-    // The whole SolidCraft preset (`UpstreamFixes::solidcraft`); it replaces the fixes
-    // set so far, so a case lists it first.
-    if name == "solidcraft" {
-        k.fixes = solidcore::kernel::UpstreamFixes::solidcraft();
-        return Ok(());
-    }
     let field = match name {
         "sweep_frame_on_planar_path_normal" => &mut k.fixes.sweep_frame_on_planar_path_normal,
+        "imprint_extends_edge_to_proto_vertex" => &mut k.fixes.imprint_extends_edge_to_proto_vertex,
+        "imprint_extension_keeps_analytic_curve" => {
+            &mut k.fixes.imprint_extension_keeps_analytic_curve
+        }
         "delete_vertex_joins_seam_iso_curve" => &mut k.fixes.delete_vertex_joins_seam_iso_curve,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
+        "cover_wraps_across_closed_seam" => &mut k.fixes.cover_wraps_across_closed_seam,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
         "fillet_refuse_ball_not_fitting" => &mut k.fixes.fillet_refuse_ball_not_fitting,
