@@ -145,6 +145,9 @@ impl Caches {
 #[allow(clippy::struct_excessive_bools)]
 #[non_exhaustive]
 pub struct UpstreamFixes {
+    /// `SmPlane::IsNurbSurfacePlane` places a recognised surface's origin after
+    /// orthogonalising its axes (WR-652, upstream issue #1056).
+    pub plane_recognition_origin_after_axes: bool,
     /// `SmGapFunction::BuildSampleSet` samples the B-spline spans inside the requested
     /// curve interval or surface domain, normalizing against that interval and keeping
     /// its exact endpoints. Upstream starts at the first knot and normalizes against
@@ -161,6 +164,9 @@ pub struct UpstreamFixes {
     /// `SmCurve::ComputeCrvsNormal` uses the sampled polygon's area vector, so a
     /// concave planar loop's normal follows its orientation and its taper drafts
     /// in the requested direction (WR-587, #1776). An open chain closes by its chord.
+    /// As the fork's change (tangency-labs/smlib@be45e8d, unchanged to eaa998a), a
+    /// failed point evaluation is the call's status and a zero area is
+    /// `SM_ERR_INVALID_INPUT`, where upstream's turns give `(0, 0, 1)`.
     pub curve_loop_normal_from_area: bool,
     /// `CalcRailIntEdgeuse`'s retry rail search holds a variable round's radius only where its first search does (at a corner calculated as constant radius), so the rail misses the arc it would meet only at that radius and the corner cuts the round off against the body; needs `fillet_nx1_end_rib_global_merge` there (WR-300, #1023).
     pub fillet_retry_radius_as_first: bool,
@@ -563,6 +569,8 @@ pub struct UpstreamFixes {
     pub fillet_cliff_overflow: bool,
     /// With `fillet_trace_reaches_rails`, `RailEdgeuseIntersect` runs a straight side edge on along its line past its far end only, never behind the corner: past the end at the filleted edge's vertex it lies on the far side of the filleted edge, outside the sector the blend fills, where no rail of it can be, and where (with the faces continued as themselves) a mirror image of the ball can be solved for (WR-643, #960; the SolidCraft fork's tangency-labs/smlib@7224896, branch `replay/1.0.1`). A side edge with both or neither end on the filleted edge still runs on past both.
     pub fillet_run_on_past_far_end_only: bool,
+    /// With `fillet_trace_reaches_rails`, `RailEdgeuseIntersect` evaluates a side edge's linear B-spline UV trim with out-of-bounds evaluation on over the run-on range (on its own copy of the trim), so it continues along its line past its ends as a line trim does. An `SmBSplineCurve` clamps the parameter to its natural interval (`SmBSplineCurve::Evaluate`, `SmBSplineCurve.cpp:3052`), so the run-on did nothing on the exact degree-1 B-spline trims `SwapUV` mirrors onto some of a box's faces: at a side edge with a line trim on one wall and a B-spline on the other, one rail's end was found past the edge's end and the other's not at all, and a chamfer split its corner's vertex between two points and failed with error 3, corner edge computation (WR-654, #1981; a round on a 5 x 5 box's edge failed with error 4).
+    pub fillet_run_on_bspline_trims: bool,
     /// `SmMerge::BooleanLists` copies its surface operands with the virtual `Copy` (the derived surface, its natural domain and its kind), where upstream's base copy constructor slices every surface to a geometry-less `SmSurface`, so a surface list always fails with `SM_ERR` and the planar 2D path is never taken (WR-196; `plan/upstream-issues/WR-196--booleanlists-slices-derived-surfaces-into-base-smsurface.md`).
     pub boolean_lists_virtual_surface_copies: bool,
     /// `SmSphere::IntersectWithPlane` and `IntersectWithSphere` return a single touching point only when the intersection circle's own radius (`sqrt(R^2 - d^2)`, or the two-sphere circle's height, each formed from the gaps to tangency) is within the tolerance, not whenever the gap to tangency is, which collapsed circles of radius up to about `sqrt(2 R tol)` (1e-3 for `R = 1`, `tol = 1e-6`) into one point (WR-79 part 1, #396; the fork's tangency-labs/smlib@30d25bf).
