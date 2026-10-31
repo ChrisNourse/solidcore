@@ -312,12 +312,14 @@ mod tests {
     use crate::error::SolidError;
     use crate::nurbs::b_spline_curve::p1::NurbCircleParam;
 
+    type PlacementCase = (f64, [f64; 3], [f64; 3], [f64; 3], f64);
+
     /// The four `overflow_regression_*` profile placements of
     /// `fixtures/primitive.primitive_creation_p1/overflow.json`: `(tol, path start,
     /// path end, profile circle centre, profile radius)`. Each path start tangent has a
     /// `1e300` component, so its squared length overflows and `Unitize` underflows to
     /// zero, which makes `MakeUnitOrthoVectors` fail `SM_ERR`.
-    const WR632_CASES: [(f64, [f64; 3], [f64; 3], [f64; 3], f64); 4] = [
+    const WR632_CASES: [PlacementCase; 4] = [
         (
             -0.069_325_498_820_103_3,
             [-1e300, 4.088_518_620_795_586, -2.376_803_691_591_771],
