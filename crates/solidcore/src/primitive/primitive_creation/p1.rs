@@ -23,8 +23,8 @@
 //! `primitive_path_curve_statuses` controls the kernel-aware pivot/extension variants;
 //! the original signatures retain pinned behavior. The `SetCanonical` of
 //! an identity profile-normal frame is elided (it always succeeds upstream).
-//! `planar_path_profile_in_path_frame` performs placement in a non-linear path's
-//! intrinsic XY frame (WR-658); XY paths keep upstream arithmetic.
+//! `planar_path_profile_in_path_frame` performs placement in the whole path's own
+//! XY frame (WR-658); XY and straight paths keep upstream arithmetic.
 //! No recursion. Primitive topology construction stops at the first unported
 //! B-rep edit; it never fabricates faces from arena records.
 
@@ -285,9 +285,10 @@ pub(super) fn extend_path_curves_impl(
 /// already made stay, and the partial axes are not used after a failed
 /// `MakeUnitOrthoVectors`. Off by default, the statuses are ignored as upstream does.
 ///
-/// With `Kernel::fixes.planar_path_profile_in_path_frame`, non-linear paths outside
-/// XY place the profile in their intrinsic XY frame and map it back (WR-658).
-/// Paths parallel to XY keep the exact legacy placement, with either normal.
+/// With `Kernel::fixes.planar_path_profile_in_path_frame`, paths with a plane outside
+/// XY place the profile in that plane's frame at the path's start and map it back
+/// (WR-658). Paths parallel to XY keep the exact legacy placement, with either normal,
+/// and straight paths the legacy placement.
 ///
 /// # Errors
 ///
@@ -309,6 +310,7 @@ pub fn position_profile_curves(
         path,
         output,
         k.fixes.planar_path_profile_placement_statuses,
+        std::slice::from_ref(path),
     )
 }
 
@@ -319,54 +321,50 @@ pub(super) fn position_profile_curves_impl(
     path: &Curve,
     output: &mut Vec<Curve>,
     checked: bool,
+    whole_path: &[Curve],
 ) -> Result<()> {
-    // WR-658: perform the legacy placement in the path's own XY frame.
-    // Both of its rotations use global axes; changing just the final Y axis
-    // leaves the profile-normal rotation (and its roll) pose dependent.
-    if k.fixes.planar_path_profile_in_path_frame
-        && !path.is_linear(k, crate::math::EFF_ZERO, false)?.linear
-    {
-        let normal = compute_crvs_normal(k, std::slice::from_ref(path))?;
-        // Preserve upstream arithmetic for paths in or parallel to XY,
-        // regardless of the direction in which the path turns.
-        if normal.x.abs() > crate::math::EFF_ZERO || normal.y.abs() > crate::math::EFF_ZERO {
-            let start = path.evaluate(k, path.natural_interval().min(), 1, true, true)?;
-            let origin = start.first().copied().ok_or_else(|| {
-                crate::error::SolidError::sm_err("primitive::position_profile_curves")
-            })?;
-            let tangent = start
-                .get(1)
-                .copied()
-                .ok_or_else(|| {
-                    crate::error::SolidError::sm_err("primitive::position_profile_curves")
-                })?
-                .unitize()?;
-            let x = tangent.cross(normal).unitize()?;
-            let frame = Axis2Placement::new(origin, x, tangent);
-            let inverse = frame.invert();
-            let mut local_profiles = profiles.to_vec();
-            for curve in &mut local_profiles {
-                curve.transform(k, &inverse, None)?;
+    // WR-658: perform the legacy placement in the whole path's own XY frame, one frame
+    // for all its pieces. Both of its rotations use global axes; changing just the final
+    // Y axis leaves the profile-normal rotation (and its roll) pose dependent.
+    if k.fixes.planar_path_profile_in_path_frame {
+        // No normal: a straight path does not determine a plane.
+        if let Ok(normal) = compute_crvs_normal(k, whole_path) {
+            // Preserve upstream arithmetic for paths in or parallel to XY,
+            // regardless of the direction in which the path turns.
+            if normal.x.abs() > crate::math::EFF_ZERO || normal.y.abs() > crate::math::EFF_ZERO {
+                let no_start =
+                    || crate::error::SolidError::sm_err("primitive::position_profile_curves");
+                let first = whole_path.first().ok_or_else(no_start)?;
+                let start = first.evaluate(k, first.natural_interval().min(), 1, true, true)?;
+                let origin = start.first().copied().ok_or_else(no_start)?;
+                let tangent = start.get(1).copied().ok_or_else(no_start)?.unitize()?;
+                let x = tangent.cross(normal).unitize()?;
+                let frame = Axis2Placement::new(origin, x, tangent);
+                let inverse = frame.invert();
+                let mut local_profiles = profiles.to_vec();
+                for curve in &mut local_profiles {
+                    curve.transform(k, &inverse, None)?;
+                }
+                let mut local_path = path.clone();
+                local_path.transform(k, &inverse, None)?;
+                let mut local_output = output.clone();
+                for curve in &mut local_output {
+                    curve.transform(k, &inverse, None)?;
+                }
+                position_profile_curves_legacy(
+                    k,
+                    &local_profiles,
+                    tol,
+                    &local_path,
+                    &mut local_output,
+                    checked,
+                )?;
+                for curve in &mut local_output {
+                    curve.transform(k, &frame, None)?;
+                }
+                *output = local_output;
+                return Ok(());
             }
-            let mut local_path = path.clone();
-            local_path.transform(k, &inverse, None)?;
-            let mut local_output = output.clone();
-            for curve in &mut local_output {
-                curve.transform(k, &inverse, None)?;
-            }
-            position_profile_curves_legacy(
-                k,
-                &local_profiles,
-                tol,
-                &local_path,
-                &mut local_output,
-                checked,
-            )?;
-            for curve in &mut local_output {
-                curve.transform(k, &frame, None)?;
-            }
-            *output = local_output;
-            return Ok(());
         }
     }
     position_profile_curves_legacy(k, profiles, tol, path, output, checked)

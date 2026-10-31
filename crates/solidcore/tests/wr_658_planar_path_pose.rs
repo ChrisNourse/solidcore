@@ -168,3 +168,99 @@ fn xy_and_parallel_xy_keep_the_exact_legacy_result_with_either_normal() {
         }
     }
 }
+
+/// A path of two pieces, the line along +y for 20 and the quarter arc, in either order,
+/// the square as in `body`. `fixed` turns on WR-407's frame too: without it the sweep's
+/// own pose dependence still cuts the arc-then-line path to volume 0 in some poses.
+fn two_piece_body(
+    fixed: bool,
+    centre: bool,
+    line_first: bool,
+    pose: &Axis2Placement,
+) -> (Kernel, Brep) {
+    let mut k = Kernel::default();
+    k.fixes.planar_path_profile_in_path_frame = fixed;
+    k.fixes.sweep_frame_on_planar_path_normal = fixed;
+    let pts = [
+        Vec3::new(18., 0., -2.),
+        Vec3::new(22., 0., -2.),
+        Vec3::new(22., 0., 2.),
+        Vec3::new(18., 0., 2.),
+    ];
+    let mut profiles: Vec<Curve> = (0..4)
+        .map(|i| Curve::from(create_line_segment(pts[i], pts[(i + 1) % 4]).unwrap()))
+        .collect();
+    let mut paths: Vec<Curve> = if line_first {
+        vec![
+            Curve::from(
+                create_line_segment(Vec3::new(20., 0., 0.), Vec3::new(20., 20., 0.)).unwrap(),
+            ),
+            Curve::from(create_arc(Vec3::new(0., 20., 0.), 20., 0., 90.).unwrap()),
+        ]
+    } else {
+        vec![
+            Curve::from(create_arc(Vec3::ZERO, 20., 0., 90.).unwrap()),
+            Curve::from(
+                create_line_segment(Vec3::new(0., 20., 0.), Vec3::new(-20., 20., 0.)).unwrap(),
+            ),
+        ]
+    };
+    for c in profiles.iter_mut().chain(paths.iter_mut()) {
+        c.transform(&k, pose, None).unwrap();
+    }
+    let profile_refs: Vec<_> = profiles.iter().collect();
+    let path_refs: Vec<_> = paths.iter().collect();
+    let b = create_sweep_along_planar_path(&mut k, &profile_refs, &path_refs, centre, 3).unwrap();
+    (k, b)
+}
+
+/// The reviewer's case: each piece in its own frame left the line rolled and the arc
+/// not, and the mitre between them cut the sweep to volume 0.
+#[test]
+fn a_path_of_a_line_and_an_arc_is_rigid_motion_invariant() {
+    for line_first in [true, false] {
+        for centre in [true, false] {
+            let (k, mut flat) = two_piece_body(true, centre, line_first, &Axis2Placement::IDENTITY);
+            // the arc's volume, and the line's 20 x 16
+            let exact = std::f64::consts::PI * if centre { 160. } else { 144. } + 320.;
+            close(volume(&k, &mut flat), exact, exact * 1e-4);
+            let bb = brep_bounding_box(&k, &flat, true).unwrap();
+            for (axis, angle) in [
+                (Vec3::X, 30.),
+                (Vec3::Y, 30.),
+                (Vec3::Y, 60.),
+                (Vec3::X, 90.),
+                (Vec3::Y, 90.),
+                (Vec3::new(1., 2., 3.), 67.),
+                (Vec3::new(-2., 1., 4.), 41.),
+            ] {
+                let p = pose(axis, angle, Vec3::new(3., -7., 11.));
+                let (mut k, mut b) = two_piece_body(true, centre, line_first, &p);
+                close(volume(&k, &mut b), exact, exact * 1e-4);
+                solidcore::topology::brep::p5::transform(&mut k, &mut b, &p.invert(), None, false)
+                    .unwrap();
+                let actual = brep_bounding_box(&k, &b, true).unwrap();
+                let drift = actual
+                    .min()
+                    .distance(bb.min())
+                    .max(actual.max().distance(bb.max()));
+                assert!(drift < 1e-3, "{drift}: {actual:?} != {bb:?}");
+            }
+        }
+    }
+}
+
+/// The default for that path: the arc-then-line sweep is empty when tilted (the port;
+/// not run on the C++), and the line-then-arc sweep rolled.
+#[test]
+fn default_two_piece_paths_keep_upstream_pose_dependence() {
+    let p = pose(Vec3::X, 30., Vec3::new(3., -7., 11.));
+    let (k, mut empty) = two_piece_body(false, true, false, &p);
+    assert_eq!(volume(&k, &mut empty), 0.0);
+    let (mut k, mut rolled) = two_piece_body(false, true, true, &p);
+    close(volume(&k, &mut rolled), 822.654314, 1e-5);
+    solidcore::topology::brep::p5::transform(&mut k, &mut rolled, &p.invert(), None, false)
+        .unwrap();
+    let bb = brep_bounding_box(&k, &rolled, true).unwrap();
+    close(bb.max().z, 2.732050807568877, 1e-3);
+}
