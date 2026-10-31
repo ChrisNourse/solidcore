@@ -7,6 +7,7 @@
 //! |------|----------|
 //! | [`FilletExecutive::do_fillet`] | `SmFilletExecutive::DoFillet` |
 //! | [`FilletExecutive::create_fillet_brep`] | `SmFilletExecutive::CreateFilletBrep` |
+//! | [`FilletExecutive::ease_set_back_sections`] | the fork's `EaseSetBackSections` call in `CreateFilletBrep` (tangency-labs/smlib `e74bbd3`) |
 //! | [`FilletExecutive::preview_fillet_geometry`] | `SmFilletExecutive::GetPreviewFilletSurfaces` after its `CreateFilletCorners` |
 //! | [`FilletExecutive::do_filleting`] | `SmFilletExecutive::DoFilleting` |
 //! | [`FilletExecutive`], [`ErrorInfo`] | executive/error-info member data (co-ported from p1) |
@@ -1762,6 +1763,16 @@ pub trait BrepCreationAccess<O: ClassObject + SolutionObject + Ord>:
     /// The judging's own errors; the adapter over [`ExecutiveAccess`] has no solver
     /// geometry to judge.
     fn creation_ball_fits(&mut self, k: &mut Kernel, solver: O) -> Result<bool>;
+
+    /// `sm_ExtendTraceToItsRails` (fork tangency-labs/smlib@a9277fd, WR-609; called
+    /// before the corners since @6e77631, WR-610) on this solver: let its trace reach
+    /// as far as its rails can lie from the filleted edge. Only a live session has
+    /// solvers to extend.
+    ///
+    /// # Errors
+    /// The extension's own errors; the adapter over [`ExecutiveAccess`] has no solver
+    /// geometry to extend.
+    fn creation_extend_trace_to_its_rails(&mut self, k: &mut Kernel, solver: O) -> Result<()>;
 }
 impl<O, A> BrepCreationAccess<O> for A
 where
@@ -1778,6 +1789,10 @@ where
 
     fn creation_ball_fits(&mut self, _k: &mut Kernel, _solver: O) -> Result<bool> {
         Err(invalid("the ball-fit rule needs a live fillet session"))
+    }
+
+    fn creation_extend_trace_to_its_rails(&mut self, _k: &mut Kernel, _solver: O) -> Result<()> {
+        Err(invalid("the trace reach needs a live fillet session"))
     }
 }
 
@@ -2020,6 +2035,19 @@ pub trait SolverGeometryAccess<O: ClassObject + SolutionObject + Ord> {
             "SmFilletExecutive::BandsClearOtherRails (fork)",
             "blend.fillet_executive_p3",
         ))
+    }
+
+    /// The fork's `SmFilletExecutive::EaseSetBackSections` over `corners` (not upstream;
+    /// tangency-labs/smlib `e74bbd3`, #1376): each round eased into its curvature-continuous
+    /// section before the setbacks of corners with an ease (`SmFilletCorner::m_dEaseDist`).
+    /// The default is a context whose corners carry no ease, where the fork's routine
+    /// changes nothing and succeeds.
+    ///
+    /// # Errors
+    /// Those of the easing (the live session's).
+    fn geometry_ease_set_back_sections(&mut self, k: &mut Kernel, corners: &[O]) -> Result<()> {
+        let _ = (k, corners);
+        Ok(())
     }
 }
 
@@ -2343,6 +2371,32 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
         Ok(())
     }
 
+    /// Ease each round into its curvature-continuous section before the setbacks that ask
+    /// for it, before the corners' edges (their cross-sections) are computed (not upstream;
+    /// the fork's `EaseSetBackSections` call in `CreateFilletBrep`, tangency-labs/smlib
+    /// `e74bbd3`, #1376). Without a corner ease ([`FilletCorner::ease_dist`], `0.0` by
+    /// default) nothing changes. A failure notes `SM_FILERR_EDGE_PROBLEM`.
+    ///
+    /// [`FilletCorner::ease_dist`]: crate::blend::fillet_corner::p3::FilletCorner::ease_dist
+    ///
+    /// # Errors
+    /// The failure as `SM_ERR`, noted in the error info; [`SolidError::Unported`] from the
+    /// easing.
+    pub fn ease_set_back_sections(
+        &mut self,
+        k: &mut Kernel,
+        access: &mut impl SolverGeometryAccess<O>,
+    ) -> Result<()> {
+        let corners = self.corners.clone();
+        if ignore(access.geometry_ease_set_back_sections(k, &corners))?.is_none() {
+            // The generic NoteError overload changes exactly these two members.
+            self.error.code = FilletErrorType::EdgeProblem as i32;
+            self.error.comment = "Fillet Error: unable to ease a round into its curvature-continuous section before a setback".into();
+            return Err(failure());
+        }
+        Ok(())
+    }
+
     /// `NoteError(NoRoom, comment)` (`NoRoom` is not an upstream code), then `SM_ERR`.
     fn record_no_room(&mut self, comment: &str) -> Result<()> {
         // The generic NoteError overload changes exactly these two members.
@@ -2637,12 +2691,26 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
             }
         }
 
+        // Opt-in, not upstream (`fixes.fillet_trace_reaches_rails`, WR-609/WR-610; the
+        // fork's tangency-labs/smlib@a9277fd and @6e77631): each solver's base surfaces
+        // reach as far as its rails can lie from the edge before the corners look for
+        // where the rails meet the side edges, which search those surfaces' extended
+        // domains as the trace does.
+        if k.fixes.fillet_trace_reaches_rails {
+            let mut index = 0;
+            while let Some(solver) = self.solvers.get(index).copied() {
+                access.creation_extend_trace_to_its_rails(k, solver)?;
+                index += 1;
+            }
+        }
+
         self.create_corner_vertices(k, access)?;
         self.adjust_corner_topology(k, access)?;
         self.calculate_solver_geometry(k, access)?;
         self.refuse_blends_larger_than_faces(k, access)?;
         self.refuse_face_consuming_blends(k, access)?;
         self.refuse_overlapping_bands(k, access)?;
+        self.ease_set_back_sections(k, access)?;
         self.calculate_corner_edges(k, access)?;
         self.trim_solver_rails(k, access)?;
         self.classify_solver_rails(k, access)?;
