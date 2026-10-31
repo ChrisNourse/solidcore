@@ -1288,7 +1288,7 @@ mod tests {
         crate::topology::face::p2::surface(b, f)
             .unwrap()
             .unwrap()
-            .is_kind_of(crate::surface::plane::Plane::TYPE)
+            .is_kind_of(Plane::TYPE)
             .unwrap()
     }
 
