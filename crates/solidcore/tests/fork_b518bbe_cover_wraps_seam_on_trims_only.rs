@@ -5,10 +5,10 @@
 //! wraps. Stored domains are conservative and may be the faces' whole surfaces: across the
 //! seam they cover too, and the merged face took them as its domain.
 //!
-//! The case is the prog_test `my_test_coaxial_merge_domain` (tests/prog_test/src/
-//! smTopoTest.cpp) with its broad inputs, the one the fork's commit names: three half-turn
-//! faces 1 high on coaxial cylinders of radius 50 (the middle one framed a quarter turn
-//! round), stitched and merged by `RemoveTopologicalEdgesAndVertices`. Each face's stored
+//! The case is the `prog_test` `my_test_coaxial_merge_domain`
+//! (`tests/prog_test/src/smTopoTest.cpp`) with its broad inputs, the one the fork's commit
+//! names: three half-turn faces 1 high on coaxial cylinders of radius 50 (the middle one
+//! framed a quarter turn round), stitched and merged by `RemoveTopologicalEdgesAndVertices`. Each face's stored
 //! domain is its cylinder's whole natural domain. The merged face spans 180 degrees by 3;
 //! the test allows the cover sampler's expansion, 200 by 4. With 16bf1cb alone the stored
 //! domains merged across the seam to 360 by 208.
@@ -98,7 +98,7 @@ fn merged_domains(fix: bool, broad: bool, reverse: bool) -> Vec<(Extent2d, bool)
         let domain = coaxial_face_uv_box(&k, &surface, 50.0, z0, z0 + 1.0);
         let natural = surface.natural_uv_domain_with_nurb(&k).unwrap();
         let f = {
-            let mut state = ArenaNotifyState::new(&mut b);
+            let mut state = ArenaNotifyState::new(&b);
             let mut env = state.env(None);
             let mut marks = Marks::default();
             let this_face = |face| arena_identity(CacheObject::Face(face));
@@ -133,7 +133,7 @@ fn merged_domains(fix: bool, broad: bool, reverse: bool) -> Vec<(Extent2d, bool)
 }
 
 /// With the fix the broad inputs merge to the faces' 180 degrees by 3 (within the
-/// prog_test's 200 by 4), in either order and on both passes, as the face-sized ones do.
+/// `prog_test`'s 200 by 4), in either order and on both passes, as the face-sized ones do.
 #[test]
 fn fork_b518bbe_broad_stored_domains_merge_to_the_trims() {
     for reverse in [false, true] {
