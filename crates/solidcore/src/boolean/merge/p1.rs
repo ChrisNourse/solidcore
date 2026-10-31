@@ -43,13 +43,21 @@
 //! it on both sides (slits), skipping any a later removal deleted.
 //! Opt-in `Kernel::fixes.fillet_cleanup_keeps_target_faces` (WR-459, #423): the edges in
 //! `CleanupRelations::kept_edges`, and those whose faces are all in `kept_faces`, stay.
+//! Opt-in `Kernel::fixes.fillet_cleanup_removes_input_slits` (WR-602, the fork's
+//! tangency-labs/smlib@cac11ea): of those, an edge with one face on both sides (a slit)
+//! is checked all the same, and the kept-faces test needs two faces.
+//! Opt-in `Kernel::fixes.cover_wraps_across_closed_seam` (WR-599, the fork's
+//! tangency-labs/smlib@16bf1cb): after each face merge `boolean_post_process` runs
+//! `HasSeamProblem` on the merged face and `SplitAtSeam` when a seam is crossed or missing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boolean::topology_intersector::p1::Relations;
 use crate::error::{EntityRef, Result, SolidError};
 use crate::geom::a_object::{self, BooleanOperation};
-use crate::geom::attribute::{ids, AttributeStore, ObjectKey};
+#[cfg(test)]
+use crate::geom::attribute::ObjectKey;
+use crate::geom::attribute::{ids, AttributeStore};
 use crate::geom::axis2_placement::Axis2Placement;
 use crate::geom::context::Context;
 use crate::geom::object::{NotifyOperation, ObjectRef};
@@ -61,7 +69,7 @@ use crate::query::brep::{self as qbrep, BoundingBoxOptions, BrepQuery};
 use crate::topology::brep::p4;
 use crate::topology::edgeuse::p1 as eu;
 use crate::topology::shell;
-use crate::topology::topology::{self as topo, Topology};
+use crate::topology::topology::{self as topo};
 use crate::topology::topology_traverser::face_edges;
 use crate::topology::{edge, vertex, Brep, EdgeId, FaceId, FaceuseId, RegionId, ShellId, VertexId};
 
@@ -247,8 +255,13 @@ pub fn find_brep_region_of_other_face(
     other_faceuse: FaceuseId,
     brep_mates: &BTreeMap<EdgeId, EdgeId>,
 ) -> Result<Option<RegionId>> {
-    if brep.regions().len() == 1 {
-        return Ok(brep.regions().ids().next());
+    // `GetSize() == 1` and `GetList()`: the B-rep's region list, not its region records
+    // (a region `DeleteFace` merged away keeps its record off the list)
+    let listed = crate::topology::brep::p1::regions(brep, None)?;
+    if listed.len() == 1 {
+        if let Some(&region) = listed.first() {
+            return Ok(Some(region));
+        }
     }
     let edges = eu::faceuse_edgeuses(other, other_faceuse, false, None)?;
     for &other_eu in &edges {
@@ -370,7 +383,7 @@ pub fn edge_borders_solid(b: &Brep, e: EdgeId) -> Result<Option<ShellId>> {
 /// Keys must be distinct across operands even when their arena ids coincide.
 pub struct VertexCopy<'a> {
     /// Topology base-class records of both operands.
-    pub records: &'a mut BTreeMap<ObjectKey, Topology>,
+    pub records: &'a mut crate::topology::topology::NotifyRecords,
     /// Attributes of both operands.
     pub attributes: &'a mut AttributeStore,
     /// Notification identity of each other-operand vertex.
@@ -423,8 +436,8 @@ pub fn merge_vertex(
     // yet (a vertex the merge did not create) is the default one.
     let source_ref = (copy.source_key)(source);
     let dest_ref = (copy.destination_key)(EntityRef::Vertex(dest));
-    copy.records.entry(source_ref.key).or_default();
-    copy.records.entry(dest_ref.key).or_default();
+    copy.records.or_default(source_ref.key);
+    copy.records.or_default(dest_ref.key);
     topo::notify(
         copy.records,
         copy.attributes,
@@ -475,6 +488,45 @@ fn set_face_tolerance(brep: &mut Brep, face: FaceId, tolerance: f64) -> Result<(
     crate::topology::face::p3::set_tolerance(brep, face, tolerance, true, true)
 }
 
+/// WR-599 (`Kernel::fixes.cover_wraps_across_closed_seam`): `pMerged->HasSeamProblem(..)`
+/// (its classification status propagated, as the fork's `SER`), then, when a seam is
+/// crossed or missing (the fork's static `SmFace::HasSeamProblem(eCrossed, eMissing)`),
+/// `pMerged->SplitAtSeam(..)` with its optional arguments left out, notifying through
+/// the merge's `notifications` when it has them.
+fn split_merged_face_at_seam(
+    k: &mut Kernel,
+    brep: &mut Brep,
+    notifications: Option<&mut edge::NotifyEnv<'_>>,
+    face: FaceId,
+) -> Result<()> {
+    use crate::heal::face_props::LoopObject;
+    use crate::nurbs::b_spline_surface::SurfParamType;
+    use crate::topology::brep::p1::HealLoopHandle;
+    let check = crate::topology::face::p4::has_seam_problem_in_brep_mut::<HealLoopHandle>(
+        k,
+        brep,
+        face,
+        crate::topology::face::p4::HasSeamProblemOptions::default(),
+    )?;
+    let problem = check.problem;
+    if problem.crossed == SurfParamType::Neither && problem.missing == SurfParamType::Neither {
+        return Ok(());
+    }
+    let (mut class_u, mut class_v) = (check.class_u, check.class_v);
+    crate::topology::face::p1::split_at_seam_notified(
+        k,
+        brep,
+        notifications,
+        face,
+        &mut class_u,
+        &mut class_v,
+        problem,
+        None,
+        &|o: HealLoopHandle| o.as_topology(),
+    )?;
+    Ok(())
+}
+
 /// Remove topological intersection edges and redundant vertices. `check_all_edges`
 /// defaults to true upstream; false checks only the intersection lists with live
 /// mates. In both modes the vertex list is the intersection list plus the deleted
@@ -484,6 +536,25 @@ pub fn boolean_post_process(
     brep: &mut Brep,
     relations: &CleanupRelations,
     check_all_edges: bool,
+) -> Result<()> {
+    boolean_post_process_with_notifications(k, brep, relations, check_all_edges, None)
+}
+
+/// [`boolean_post_process`] with the merge's notification state: `DeleteEdge`'s face
+/// merges, `DeleteVertex` and `DeleteTopologicalVertex`'s edge merges notify through
+/// `notifications` (its records, attributes and identities), so the merged faces and
+/// edges keep the attributes of the objects merged into them (`SM_NO_MERGE_IN_BREP`).
+/// Without it each deletion notifies through a store of its own, as for a caller
+/// holding no notification state.
+///
+/// # Errors
+/// As [`boolean_post_process`].
+pub(crate) fn boolean_post_process_with_notifications(
+    k: &mut Kernel,
+    brep: &mut Brep,
+    relations: &CleanupRelations,
+    check_all_edges: bool,
+    mut notifications: Option<&mut edge::NotifyEnv<'_>>,
 ) -> Result<()> {
     let mut edges: Vec<_> = if check_all_edges {
         brep_edges(brep)?
@@ -511,12 +582,20 @@ pub fn boolean_post_process(
         } else if !check_all_edges && relations.mates.edges.other(e).is_none() {
             continue;
         }
-        if relations.kept_edges.contains(&e) {
+        // WR-602 (`Kernel::fixes.fillet_cleanup_removes_input_slits`, the fork's
+        // tangency-labs/smlib@cac11ea): an edge of the fillet's input, or one between two
+        // of its faces, stays, unless one face lies on both its sides: removing that slit
+        // merges no faces.
+        let input_slits = k.fixes.fillet_cleanup_removes_input_slits;
+        if relations.kept_edges.contains(&e)
+            && !(input_slits && edge::faces(brep, e, None)?.len() == 1)
+        {
             continue;
         }
         if !relations.kept_faces.is_empty() {
             let faces = edge::faces(brep, e, None)?;
-            if !faces.is_empty() && faces.iter().all(|f| relations.kept_faces.contains(f)) {
+            let least = if input_slits { 2 } else { 1 };
+            if faces.len() >= least && faces.iter().all(|f| relations.kept_faces.contains(f)) {
                 continue;
             }
         }
@@ -559,8 +638,13 @@ pub fn boolean_post_process(
                 endpoints.push(v);
             }
         }
-        // SER(DeleteEdge(pEdge, pSurfToKeep)); the cleanup holds no notification state
-        p4::with_local_env(|env| p4::delete_edge(k, brep, env, e, Some(keep)))?;
+        // SER(DeleteEdge(pEdge, pSurfToKeep))
+        match notifications.as_deref_mut() {
+            Some(env) => {
+                p4::delete_edge(k, brep, &mut p4::DeleteEnv::from_notify(env), e, Some(keep))?;
+            }
+            None => p4::with_local_env(|env| p4::delete_edge(k, brep, env, e, Some(keep)))?,
+        }
         // `pSurfToKeep->GetFace()`: when the face holding the kept surface is the one
         // merged away, DeleteEdge swaps that surface onto the surviving face first
         let keep = if brep.face(keep).is_ok() {
@@ -574,6 +658,14 @@ pub fn boolean_post_process(
         // unconditionally, even if IsTopological left it untouched.
         let domain = topological.merged_face_domain.unwrap_or_default();
         crate::topology::face::p2::set_uv_domain(brep, keep, &domain)?;
+        if k.fixes.cover_wraps_across_closed_seam {
+            // WR-599 (the fork's tangency-labs/smlib@16bf1cb): a face that wraps its
+            // surface's period may have taken in a face straddling the seam
+            // (`CoverCoincidentSurface`): the merged face is the periodic face whose seam
+            // runs on through that part. Add the missing piece of the seam, splitting the
+            // edges that cross it, as a face on a periodic surface has it.
+            split_merged_face_at_seam(k, brep, notifications.as_deref_mut(), keep)?;
+        }
         if slits {
             // WR-304: an operand edge between two faces that are now one bounds the
             // merged face on both sides (a slit); check it by the same test.
@@ -601,7 +693,12 @@ pub fn boolean_post_process(
         }
         if vertex::is_loop_vertex(brep, v)? {
             // SER(DeleteVertex(pVertex))
-            p4::with_local_env(|env| p4::delete_vertex(k, brep, env, v))?;
+            match notifications.as_deref_mut() {
+                Some(env) => {
+                    p4::delete_vertex(k, brep, &mut p4::DeleteEnv::from_notify(env), v)?;
+                }
+                None => p4::with_local_env(|env| p4::delete_vertex(k, brep, env, v))?,
+            }
             continue;
         }
         if vertex::is_topological_vertex(k, brep, v)? {
@@ -619,13 +716,16 @@ pub fn boolean_post_process(
                     brep.geometry_owner_key(EntityRef::Edge(e)),
                 ));
             }
-            ignore_failure(crate::topology::brep::p5::delete_topological_vertex(
-                k,
-                brep,
-                editing,
-                Some(v),
-                None,
-            ))?;
+            ignore_failure(
+                crate::topology::brep::p5::delete_topological_vertex_with_notifications(
+                    k,
+                    brep,
+                    editing,
+                    Some(v),
+                    None,
+                    notifications.as_deref_mut(),
+                ),
+            )?;
             for (e, owner, proven) in owners {
                 if !brep.edge_list().contains(&e) {
                     continue;

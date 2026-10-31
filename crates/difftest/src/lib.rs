@@ -11,6 +11,7 @@
 pub mod baseline;
 pub mod case;
 pub mod compare;
+pub mod constructor;
 pub mod export_memo;
 pub mod fixtures;
 pub mod fuzz;
@@ -20,6 +21,8 @@ pub mod known;
 pub mod output;
 #[cfg(feature = "cpp")]
 pub(crate) mod own_builder;
+#[cfg(feature = "cpp")]
+pub(crate) mod own_reader;
 pub mod plan;
 pub mod platform;
 pub mod report;

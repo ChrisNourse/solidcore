@@ -17,6 +17,7 @@
 //! | [`stitch_and_orient`] | `SmBrep::StitchAndOrient` |
 //! | [`squeeze_face`] | `SmBrep::SqueezeFace` |
 //! | [`transform`] | `SmBrep::Transform(const SmAxis2Placement&, ...)` (the 4x4 matrix overload is not owned by this unit) |
+//! | [`turn_to_nurbs_plain`] | `SmBrep::TurnToNURBS()` as a plain entry point (the edit is `topology.brep_p3`'s) |
 //! | [`PendingTopology`] | `SmPendingTopologyDelete` constructor/destructor and `Clear` (co-port) |
 //!
 //! Deviations: dependency-limited editing. All twelve owned editing
@@ -38,6 +39,9 @@
 //! (`topology.brep_p9`) notify through that environment, so [`make_manifold`] and
 //! [`stitch_and_orient`] take the kernel. Curves have no identity in the port: `SetCurve`'s new/old curve
 //! data are null and a curve's own `SM_NO_CHANGE_OWNER` is not delivered.
+//! Not upstream: with `Kernel::fixes.glue_vertices_joins_every_region` (WR-607; SolidCraft
+//! change, tangency-labs/smlib 661f79c) [`glue_vertices`] joins the pair of shells of every
+//! region both vertices are in, not only the last pair its search finds.
 //! `SmBrep::Notify` is owned by `topology.brep_p2`, not this unit. Owning-list
 //! traversal (`GetRegions`, `GetFaces`, `GetEdges`, `GetVertices`) and the editing
 //! flag are `topology.brep_p1`'s list-order collections and `Brep` member. Pointer inputs are optional typed ids;
@@ -54,6 +58,12 @@
 //! vertex and vertex-use record erasure requires part 4's owning-storage lifecycle: the shared
 //! arena is append-only, so shifting ids or leaving a visible dummy is invalid.
 //! Debug drawing/assertions are omitted. No recursion is introduced.
+//! `DeleteTopologicalVertex` leaves the vertex in place (the routine's silent `SM_ERR`)
+//! for an edge curve that is not of an `SmBSplineCurve` kind, where upstream dereferences
+//! the null cast (WR-598, the fork's tangency-labs/smlib@829b982); joining a curve on a
+//! B-spline-kind surface along a constant-u or constant-v UV line as that iso curve is
+//! opt-in (`Kernel::fixes.delete_vertex_joins_seam_iso_curve`). A line joined through
+//! the `SmBSplineCurve` join gets its NURB made first, as `GetOrCreateGwNurbPointer` does.
 
 use crate::curve::curve::Curve;
 use crate::error::{Result, SolidError};
@@ -120,10 +130,11 @@ const OP: &str = "topology::brep::p5";
 
 /// Runs `f` with the caller's notification environment, or, for a plain entry point
 /// (`notifications` is `None`: the caller keeps no notification state of its own),
-/// with an [`brep_p2::ArenaNotifyState`] of `b` notifying through `context`. `f`'s last
+/// with an [`brep_p2::ArenaNotifyState`] of `b` (holding `b`'s own attributes for the
+/// edit) notifying through `context`. `f`'s last
 /// argument is the context the caller's own environment falls back to (`context`
 /// then; `None` for the arena state, which already holds it).
-fn with_notifications<R>(
+pub(super) fn with_notifications<R>(
     b: &mut Brep,
     notifications: Option<&mut EditNotifyEnv<'_>>,
     context: Option<&mut crate::geom::context::Context>,
@@ -136,9 +147,13 @@ fn with_notifications<R>(
     if let Some(env) = notifications {
         f(b, env, context)
     } else {
-        let mut state = brep_p2::ArenaNotifyState::new(b);
-        let mut env = state.env(context);
-        f(b, &mut env, None)
+        // (not upstream) with `b`'s own attributes, given back afterwards
+        let mut state = brep_p2::ArenaNotifyState::with_attributes_of(b);
+        let r = f(b, &mut state.env(context), None);
+        let restored = state.restore_attributes(b);
+        let r = r?;
+        restored?;
+        Ok(r)
     }
 }
 
@@ -164,7 +179,7 @@ fn with_p3_notifications<R>(
 /// through the kernel context's callbacks, lent to the edit. One environment covers
 /// the whole edit, so every object keeps one identity in it. A plain entry point
 /// called inside another lent edit is refused before anything changes.
-fn plain_edit<R>(
+pub(super) fn plain_edit<R>(
     k: &mut Kernel,
     b: &mut Brep,
     edit: impl FnOnce(&mut Kernel, &mut Brep, &mut EditNotifyEnv<'_>) -> Result<R>,
@@ -340,8 +355,13 @@ pub fn combine_with_notifications(
             .curve
             .as_ref()
             .ok_or_else(|| SolidError::invalid_input(OP, "common edge without curve"))?;
-        let length = crate::error::ignored(curve.length(k, &record.interval, target.tolerance))?
-            .unwrap_or(0.0);
+        let length = crate::error::ignored(curve.length_with_zone_tol(
+            k,
+            &record.interval,
+            target.tolerance,
+            Some(record.tolerance),
+        ))?
+        .unwrap_or(0.0);
         if length > target.minimum_edge_length {
             // Retain a long common edge; GlueVertices will close it.
             common = None;
@@ -543,7 +563,7 @@ fn post_insert_vertexuse(b: &mut Brep, vertex: VertexId, vu: VertexuseId) -> Res
     Ok(())
 }
 
-fn set_vertex_point(
+pub(super) fn set_vertex_point(
     k: &mut Kernel,
     b: &mut Brep,
     vertex: VertexId,
@@ -752,8 +772,8 @@ pub fn delete_topological_vertex_with_notifications(
     // that metadata. Coincidence classification still handles equal geometry.
     let mut same_geometry = false;
     if !same_geometry {
-        let delete_curve = edge_curve(b, deleted)?;
-        let survive_curve = edge_curve(b, survivor)?;
+        let delete_curve = edge_curve_with_tolerance(b, deleted)?;
+        let survive_curve = edge_curve_with_tolerance(b, survivor)?;
         let deleted_range = delete_curve.natural_interval();
         let survivor_range = survive_curve.natural_interval();
         // The native overload defaults bSnapToEnds to TRUE. Its additional-work
@@ -762,7 +782,7 @@ pub fn delete_topological_vertex_with_notifications(
             crate::error::ignored(delete_curve.global_coincidence_checker::<JoinCurve>(
                 k,
                 &deleted_range,
-                survive_curve,
+                &survive_curve,
                 &survivor_range,
                 0.001,
                 true,
@@ -829,20 +849,19 @@ pub fn delete_topological_vertex_with_notifications(
         };
         b.edge_mut(survivor)?.interval.add_value(far);
     } else {
-        let mut deleted_copy = edge_curve(b, deleted)?.copy(k)?;
-        let mut interval = deleted_interval;
-        deleted_copy.trim(
-            k,
-            &mut interval,
-            crate::nurbs::b_spline_curve_n_lib::TrimMode::Notify,
-        )?;
-        let mut surviving_copy = edge_curve(b, survivor)?.copy(k)?;
-        interval = survivor_interval;
-        surviving_copy.trim(
-            k,
-            &mut interval,
-            crate::nurbs::b_spline_curve_n_lib::TrimMode::Notify,
-        )?;
+        // Upstream casts each copy to `SmBSplineCurve` and calls `Trim` through the
+        // result unchecked, so an edge curve of another kind (an `SmCrvOnSurf`) is a null
+        // dereference (WR-598). Here such a curve is not joined: the routine's silent
+        // error, with nothing changed yet (the fork's tangency-labs/smlib@829b982).
+        // `Kernel::fixes.delete_vertex_joins_seam_iso_curve` also joins a curve on a
+        // B-spline surface along a constant-u or constant-v UV line as that iso curve.
+        let Some(mut deleted_copy) = exact_bspline_of_edge(k, b, deleted, deleted_interval)? else {
+            return Err(SolidError::sm_err(OP));
+        };
+        let Some(mut surviving_copy) = exact_bspline_of_edge(k, b, survivor, survivor_interval)?
+        else {
+            return Err(SolidError::sm_err(OP));
+        };
         if crate::error::ignored(join_copied_curves(
             k,
             &mut surviving_copy,
@@ -903,12 +922,111 @@ pub fn delete_topological_vertex_with_notifications(
     Ok(())
 }
 
+/// The edge's curve as a B-spline over the edge's interval, running the curve's way, to
+/// join it with its neighbour (the fork's `sm_ExactBSplineOfEdge`, tangency-labs/smlib@829b982):
+/// a curve of an `SmBSplineCurve` kind (lines and conics included) copied and trimmed, as
+/// upstream does. Any other curve is `None`; upstream dereferences the null cast instead
+/// (WR-598). With `Kernel::fixes.delete_vertex_joins_seam_iso_curve`, a curve on a
+/// B-spline-kind surface whose UV curve is a line of constant u or v (the seam an
+/// extrusion leaves on its wall) is that surface's iso curve over the stretch, which is
+/// the same curve exactly.
+fn exact_bspline_of_edge(
+    k: &Kernel,
+    b: &Brep,
+    edge: EdgeId,
+    interval: Extent1d,
+) -> Result<Option<Curve>> {
+    use crate::curve::curve::p2::{BSPLINE_CURVE_TYPE, LINE_TYPE};
+    use crate::curve::curve::CurveKind;
+    let curve = edge_curve(b, edge)?;
+    if curve.is_kind_of(BSPLINE_CURVE_TYPE) {
+        let mut copy = curve.copy(k)?;
+        let mut interval = interval;
+        // may snap the interval by tol to existing knots
+        copy.trim(
+            k,
+            &mut interval,
+            crate::nurbs::b_spline_curve_n_lib::TrimMode::Notify,
+        )?;
+        return Ok(Some(copy));
+    }
+    if !k.fixes.delete_vertex_joins_seam_iso_curve {
+        return Ok(None);
+    }
+    let CurveKind::CrvOnSurf(cos) = curve.kind() else {
+        return Ok(None);
+    };
+    let uv_curve = cos.uv_curve();
+    if !uv_curve.is_kind_of(LINE_TYPE) {
+        return Ok(None);
+    }
+    let surface = cos.surface();
+    if !surface.is_kind_of(crate::surface::surface::p2::B_SPLINE_SURFACE_TYPE)? {
+        return Ok(None);
+    }
+    let a = uv_curve.evaluate_point(k, interval.min())?;
+    let bb = uv_curve.evaluate_point(k, interval.max())?;
+    let dom = surface.natural_uv_domain_with_nurb(k)?;
+    let zero_u = crate::math::EFF_ZERO * dom.u_interval().length();
+    let zero_v = crate::math::EFF_ZERO * dom.v_interval().length();
+    let (iso, iso_value, from, to) = if (a.x - bb.x).abs() <= zero_u {
+        (
+            crate::nurbs::b_spline_surface::SurfParamType::U,
+            a.x,
+            a.y,
+            bb.y,
+        )
+    } else if (a.y - bb.y).abs() <= zero_v {
+        (
+            crate::nurbs::b_spline_surface::SurfParamType::V,
+            a.y,
+            a.x,
+            bb.x,
+        )
+    } else {
+        return Ok(None);
+    };
+    let trim = if iso == crate::nurbs::b_spline_surface::SurfParamType::U {
+        crate::geom::extent2d::Extent2d::from_bounds(
+            iso_value,
+            crate::math::min2(from, to),
+            iso_value,
+            max2(from, to),
+        )
+    } else {
+        crate::geom::extent2d::Extent2d::from_bounds(
+            crate::math::min2(from, to),
+            iso_value,
+            max2(from, to),
+            iso_value,
+        )
+    };
+    let mut iso_curve = surface
+        .create_iso_parametric_curve(k, iso, iso_value, 0.0, Some(&trim), false)?
+        .curve;
+    if to < from {
+        let natural = iso_curve.natural_interval();
+        iso_curve.reverse_parameterization(k, &natural)?;
+    }
+    Ok(Some(iso_curve))
+}
+
 fn edge_curve(b: &Brep, edge: EdgeId) -> Result<&Curve> {
     b.edge(edge)?
         .curve
         .as_ref()
         .ok_or_else(|| SolidError::null_pointer(OP))
 }
+
+/// An evaluation copy of the edge's curve carrying the edge's tolerance
+/// ([`Curve::set_owner_zone_tol_3d`]), so the caches its solves build use it as
+/// upstream's over the edge-owned curve (`SmTol::GetApproxTol3d(&m_crCurve)`).
+fn edge_curve_with_tolerance(b: &Brep, edge: EdgeId) -> Result<Curve> {
+    let mut curve = edge_curve(b, edge)?.clone_for_evaluation()?;
+    curve.set_owner_zone_tol_3d(Some(b.edge(edge)?.tolerance));
+    Ok(curve)
+}
+
 /// The two curves of `DeleteTopologicalVertex`'s coincidence check as its solutions
 /// name them (upstream's `pDeleteCurve`, `pSurviveCurve`), with the natural interval
 /// `IdenticalSolutions` reads through them (`SmCurve::GetNaturalInterval`).
@@ -961,11 +1079,17 @@ fn join_copied_curves(
         ),
     }
 }
+/// The `SmBSplineCurve` part of a curve of that kind. A line's NURB is made first when it
+/// has none, as upstream's `SmBSplineCurve` methods make it (`GetOrCreateGwNurbPointer`).
 fn bspline_curve_base_mut(curve: &mut Curve) -> Result<&mut BSplineCurve> {
     use crate::curve::curve::CurveKind;
+    let owner = curve.owner();
     match curve.kind_mut() {
         CurveKind::BSpline(base) => Ok(base),
-        CurveKind::Line(line) => Ok(line.base_mut()),
+        CurveKind::Line(line) => {
+            line.ensure_nurb(owner)?;
+            Ok(line.base_mut())
+        }
         CurveKind::Ellipse(ellipse) => Ok(ellipse.base_mut()),
         CurveKind::Hyperbola(hyperbola) => Ok(hyperbola.base_mut()),
         CurveKind::Parabola(parabola) => Ok(parabola.base_mut()),
@@ -975,7 +1099,7 @@ fn bspline_curve_base_mut(curve: &mut Curve) -> Result<&mut BSplineCurve> {
 /// `pSurvivingEdge->SetCurve(pCurve, TRUE)` (status ignored upstream): notified, the
 /// old curve deleted with `delete_old`. Curves carry no identity in the port (the
 /// module's Deviations), so the notification's new/old curve data are null.
-fn set_joined_edge_curve(
+pub(super) fn set_joined_edge_curve(
     k: &mut Kernel,
     b: &mut Brep,
     edge: EdgeId,
@@ -1013,7 +1137,7 @@ fn set_joined_edge_curve(
 /// the notification environment. The curve's own `SM_NO_CHANGE_OWNER` notification
 /// (`SmObject::Notify` on the curve) is not delivered: the curve has no identity to
 /// notify under (the module's Deviations; as `topology.brep_p2`'s `SetCurve` helpers).
-fn set_edge_curve_owner(
+pub(super) fn set_edge_curve_owner(
     b: &mut Brep,
     edge: EdgeId,
     notifications: Option<&mut EditNotifyEnv<'_>>,
@@ -1201,11 +1325,18 @@ fn glue_with_notification_identity(
     }
     let distance = b.vertex(survivor)?.point.distance(b.vertex(deleted)?.point);
     let mut pair = None;
+    // Not upstream (WR-607, `fixes.glue_vertices_joins_every_region`; SolidCraft change,
+    // tangency-labs/smlib 661f79c): every region both vertices are in has its pair of
+    // shells, all of which the glue joins (a solid's vertex is in a shell of the solid's
+    // region and one of the infinite region's); one pair is kept apart below for the
+    // vertex-shell cases.
+    let mut pairs = Vec::new();
     for first in vertex::shells(b, survivor)? {
         let region = b.shell(first)?.region;
         for last in vertex::shells(b, deleted)? {
             if region == b.shell(last)?.region {
                 pair = Some((first, last));
+                pairs.push((first, last));
                 break;
             }
         }
@@ -1248,6 +1379,21 @@ fn glue_with_notification_identity(
         // status; do not invent an empty/partial wire list on those errors.
         shell_wire_edges(k, b, last)?
     };
+    // WR-607: the other regions' pairs of shells, and their wire edges, likewise.
+    let mut others = Vec::new();
+    if k.fixes.glue_vertices_joins_every_region {
+        for (surv, del) in pairs {
+            if del == last || surv == del || b.shell(del)?.is_vertex_shell() {
+                continue;
+            }
+            let other_wires = if let Some(given) = wire_edges {
+                given.to_vec()
+            } else {
+                shell_wire_edges(k, b, del)?
+            };
+            others.push((surv, del, other_wires));
+        }
+    }
     for vu in vertex::vertexuses(b, deleted)? {
         remove_vertexuse(b, deleted, vu)?;
         post_insert_vertexuse(b, survivor, vu)?;
@@ -1271,14 +1417,24 @@ fn glue_with_notification_identity(
             .region
             .ok_or_else(|| SolidError::null_pointer(OP))?;
         crate::error::ignore_status(remove_region_shell(b, region, last))?;
-        destroy_shell(k, b, notifications, last)?;
+        destroy_shell(k, b, notifications.as_deref_mut(), last)?;
+    }
+    // WR-607: join the other regions' pairs as well.
+    for (surv, del, other_wires) in others {
+        transfer_shell_children(k, b, del, surv, &other_wires)?;
+        let region = b
+            .shell(del)?
+            .region
+            .ok_or_else(|| SolidError::null_pointer(OP))?;
+        remove_region_shell(b, region, del)?;
+        destroy_shell(k, b, notifications.as_deref_mut(), del)?;
     }
     Ok(())
 }
 
 /// `Notify(SM_NO_PRE_EDIT, this, NULL, NULL)` ([`brep_p2::notify`], no B-rep cache
 /// held by the caller).
-fn notify_pre_edit(
+pub(super) fn notify_pre_edit(
     k: &mut Kernel,
     b: &mut Brep,
     notifications: Option<&mut EditNotifyEnv<'_>>,
@@ -1310,7 +1466,7 @@ fn notify_pre_edit_with_body(
         )
     })
 }
-fn notify_vertex_pre_edit(
+pub(super) fn notify_vertex_pre_edit(
     k: &mut Kernel,
     b: &mut Brep,
     vertex: VertexId,
@@ -1349,7 +1505,7 @@ fn notify_vertex_pre_edit_with_body(
 }
 /// `pFace->Notify(SM_NO_PRE_EDIT, pFace, this, NULL)` ([`crate::topology::face::p3::notify`]);
 /// no caller holds the surface's trimmed surface cache.
-fn notify_face_pre_edit(
+pub(super) fn notify_face_pre_edit(
     k: &mut Kernel,
     b: &mut Brep,
     face: FaceId,
@@ -1938,16 +2094,16 @@ fn set_editing_enabled(b: &mut Brep, enabled: bool) -> bool {
     previous
 }
 
-fn brep_regions(b: &Brep) -> Result<Vec<RegionId>> {
+pub(super) fn brep_regions(b: &Brep) -> Result<Vec<RegionId>> {
     crate::topology::brep::p1::regions(b, None)
 }
-fn brep_faces(b: &Brep) -> Result<Vec<FaceId>> {
+pub(super) fn brep_faces(b: &Brep) -> Result<Vec<FaceId>> {
     crate::topology::brep::p1::faces(b, None)
 }
-fn brep_edges(b: &Brep) -> Result<Vec<EdgeId>> {
+pub(super) fn brep_edges(b: &Brep) -> Result<Vec<EdgeId>> {
     crate::topology::brep::p1::edges(b, None)
 }
-fn brep_vertices(b: &Brep) -> Result<Vec<VertexId>> {
+pub(super) fn brep_vertices(b: &Brep) -> Result<Vec<VertexId>> {
     crate::topology::brep::p1::vertices(b, None)
 }
 fn face_shells(b: &Brep, face: FaceId) -> Result<(ShellId, ShellId)> {
@@ -2260,7 +2416,15 @@ pub fn stitch_and_orient(
     stitch_and_orient_with_identity(k, b, options, None)
 }
 
-pub(crate) fn stitch_and_orient_with_identity(
+/// [`stitch_and_orient`] with the identity its B-rep cache gives the body's objects: a
+/// caller that built the faces under its own topology names (such as
+/// [`super::p2::caller_cache_key`] over a notification naming) passes them, so the cache
+/// resolves geometry owners under those names; `None` is [`stitch_and_orient`].
+///
+/// # Errors
+///
+/// Those of [`stitch_and_orient`].
+pub fn stitch_and_orient_with_identity(
     k: &mut Kernel,
     b: &mut Brep,
     options: &StitchAndOrientOptions,
@@ -2690,6 +2854,18 @@ fn transform_in(
     Ok(())
 }
 
+/// `SmBrep::TurnToNURBS()` as a plain entry point (the caller keeps no notification
+/// state of its own: `plain_edit`), with the geometry owners [`transform`]'s
+/// conversion uses.
+///
+/// # Errors
+///
+/// Those of [`crate::topology::brep::p3::turn_to_nurbs`]; `InvalidInput` for a call
+/// inside another lent edit (before anything changes).
+pub fn turn_to_nurbs_plain(k: &mut Kernel, b: &mut Brep) -> Result<()> {
+    turn_to_nurbs(k, b, None)
+}
+
 /// `SmBrep::TurnToNURBS()` ([`crate::topology::brep::p3::turn_to_nurbs`]), notifying as
 /// [`with_p3_notifications`].
 fn turn_to_nurbs(
@@ -2715,7 +2891,7 @@ fn turn_to_nurbs(
         })
     })
 }
-fn notify_edge_pre_edit(
+pub(super) fn notify_edge_pre_edit(
     k: &mut Kernel,
     b: &mut Brep,
     edge: EdgeId,
@@ -2752,7 +2928,11 @@ fn notify_edge_pre_edit(
 // transform notifications use distinct identities. Match only a proven producer
 // key or the issued notification identity; foreign and unowned geometry keep the
 // native filter.
-fn transform_owner_key(b: &Brep, entity: crate::EntityRef, kernel_key: ObjectRef) -> ObjectRef {
+pub(super) fn transform_owner_key(
+    b: &Brep,
+    entity: crate::EntityRef,
+    kernel_key: ObjectRef,
+) -> ObjectRef {
     let owner = match entity {
         crate::EntityRef::Edge(edge) => b
             .edges()
@@ -2826,7 +3006,7 @@ fn transformed_surface_base(
 /// bCreateUVTrimCurves))` ([`brep_p2::replace_surface`]); the face is notified under
 /// the caller's identity for it.
 #[allow(clippy::too_many_arguments)] // one upstream call
-fn replace_surface(
+pub(super) fn replace_surface(
     k: &Kernel,
     b: &mut Brep,
     face: FaceId,
@@ -3116,7 +3296,6 @@ mod tests {
     fn issued_body_glue_notifies_real_caller_and_keeps_failure_prefix() {
         use crate::geom::attribute::{ids, Attribute, AttributeStore, Behavior};
         use crate::topology::edge::notification_test_support as callbacks;
-        use std::collections::BTreeMap;
 
         for separate_region in [false, true] {
             let mut k = Kernel::default();
@@ -3140,7 +3319,7 @@ mod tests {
                 let region = b
                     .add_region_record(crate::topology::Region::default())
                     .unwrap();
-                let mut setup_records = BTreeMap::new();
+                let mut setup_records = crate::topology::topology::NotifyRecords::new();
                 crate::topology::brep::p3::seed_records(&mut setup_records, &b, &key_of);
                 let mut setup_attributes = AttributeStore::default();
                 crate::topology::brep::p9::make_shell_vertex_with_kernel_context(
@@ -3161,7 +3340,7 @@ mod tests {
             };
             let survivor_ref = key_of(crate::EntityRef::Vertex(survivor));
             let deleted_ref = key_of(crate::EntityRef::Vertex(deleted));
-            let mut records = BTreeMap::new();
+            let mut records = crate::topology::topology::NotifyRecords::new();
             crate::topology::brep::p3::seed_records(&mut records, &b, &key_of);
             let mut attributes = AttributeStore::default();
             let marker = attributes

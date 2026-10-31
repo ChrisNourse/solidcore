@@ -25,6 +25,7 @@
 //! | [`Curve::is_domain_boundary`]                | `SmCurve::IsDomainBoundary` (virtual: base, ellipse, line) |
 //! | [`is_periodic`], [`Curve::is_periodic`]      | `SmCurve::IsPeriodic`                          |
 //! | [`Curve::length`], [`Curve::length_base`]    | `SmCurve::Length` (virtual: base, line)        |
+//! | `Curve::length_with_zone_tol` (crate helper) | `SmCurve::Length` (edge-owned curve)          |
 //! | [`local_property_analysis`]                  | `SmCurve::LocalPropertyAnalysis`               |
 //! | [`CcTangentIntEnfo`] (`EvalNFunctions`)      | `SmCCTangentIntENFO::Evaluate` (in `p3`)       |
 //! | [`CcIntersectEnfo::evaluate_equations`]      | `SmCCIntersectENFO::Evaluate`                  |
@@ -56,9 +57,9 @@
 //!   has the kernel's context).
 //! - **Owner tolerance.** Upstream builds the cache on the curve object itself, so a
 //!   curve that defines an edge's shape tessellates with half the edge's tolerance
-//!   (`SmTol::GetApproxTol3d(&m_crCurve)`). The cache holds an owner-free copy and
-//!   no `Brep`, so a caller holding the B-rep passes the edge's tolerance
-//!   ([`make_curve_cache_with_zone_tol`]); it is part of the memo key.
+//!   (`SmTol::GetApproxTol3d(&m_crCurve)`). The caches hold no `Brep`, so a caller
+//!   holding the B-rep passes the edge's tolerance (`make_curve_cache_with_zone_tol`
+//!   or `Curve::length_with_zone_tol`); it is part of the memo key where cached.
 //! - **Curve lists.** `CrvsCleanup` and `RemoveDuplicateCurves` take owned lists;
 //!   removed curves are dropped (`bDelCrv` is always true; `NULL` entries are
 //!   `None`). `CrvsCleanup` casts the curves around a removed one to
@@ -290,12 +291,17 @@ fn curve_is_line_base(
 ///
 /// Those of the length and knot count queries and of [`CurveCache::tessellate`]
 /// (upstream then has no cache).
+///
+/// The approximation tolerance is half the tolerance of the curve's edge when a caller
+/// recorded it on the curve ([`Curve::owner_zone_tol_3d`]), else half the system
+/// tolerance.
 pub fn make_curve_cache<O: Copy + PartialEq>(
     k: &Kernel,
     curve: &Curve,
     handle: Option<O>,
 ) -> Result<CurveCache<O>> {
-    make_curve_cache_with_zone_tol(k, curve, handle, None)
+    // SmTol::GetApproxTol3d(&m_crCurve): the edge's tolerance through the owner
+    make_curve_cache_with_zone_tol(k, curve, handle, curve.owner_zone_tol_3d())
 }
 
 /// [`make_curve_cache`] for a curve that defines an edge's shape: `zone_tol_3d` is that
@@ -323,7 +329,7 @@ pub fn make_curve_cache_with_zone_tol<O: Copy + PartialEq>(
     let cache = build_curve_cache(k, curve, handle, zone_tol_3d)?;
     if let Some(key) = key {
         if let Some(neutral) = cache.retag::<()>(None) {
-            curve.memo().store(key, neutral);
+            curve.memo().store(&key, neutral);
         }
     }
     Ok(cache)
@@ -473,12 +479,12 @@ impl CurveMemo {
             .and_then(|e| e.cache.retag(handle))
     }
 
-    fn store(&self, key: CurveMemoKey, cache: CurveCache<()>) {
+    fn store(&self, key: &CurveMemoKey, cache: CurveCache<()>) {
         let slot = self.0.get_or_init(Arc::default);
         let mut entry = slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *entry = Some(CurveMemoEntry { key, cache });
+        *entry = Some(CurveMemoEntry { key: *key, cache });
     }
 }
 
@@ -508,7 +514,7 @@ fn build_curve_cache<O: Copy + PartialEq>(
 
     // construct new CurveCache Object
     let mut cache = CurveCache::new(
-        curve.clone_detached(),
+        curve.clone_detached()?,
         ivl,
         CurveCacheOptions {
             make_full_tree: true,
@@ -1204,8 +1210,8 @@ impl Curve {
         let dom = self.natural_interval();
         for &frac in &params {
             let t = dom.evaluate(frac);
-            // (status ignored)
-            if let Some(v) = ignored(self.evaluate(k, t, 1, false, false))? {
+            // (status ignored; `SmCurve::Evaluate`'s default `bNonZeroTangents = TRUE`)
+            if let Some(v) = ignored(self.evaluate(k, t, 1, false, true))? {
                 for (d, s) in pt_der.iter_mut().zip(v) {
                     *d = s;
                 }
@@ -1645,9 +1651,21 @@ impl Curve {
     ///
     /// Those of [`Curve::length_base`].
     pub fn length(&self, k: &Kernel, interval: &Extent1d, desired_accuracy: f64) -> Result<f64> {
+        self.length_with_zone_tol(k, interval, desired_accuracy, None)
+    }
+
+    /// Arc length with the owning edge's resolved zone tolerance, independent of
+    /// the desired integration accuracy. Retains the virtual line override.
+    pub(crate) fn length_with_zone_tol(
+        &self,
+        k: &Kernel,
+        interval: &Extent1d,
+        desired_accuracy: f64,
+        owner_zone_tol_3d: Option<f64>,
+    ) -> Result<f64> {
         match self.kind() {
             CurveKind::Line(l) => Ok(l.length(interval)),
-            _ => self.length_base(k, interval, desired_accuracy),
+            _ => self.length_base_with_zone_tol(k, interval, desired_accuracy, owner_zone_tol_3d),
         }
     }
 
@@ -1667,6 +1685,16 @@ impl Curve {
         interval: &Extent1d,
         desired_accuracy: f64,
     ) -> Result<f64> {
+        self.length_base_with_zone_tol(k, interval, desired_accuracy, None)
+    }
+
+    fn length_base_with_zone_tol(
+        &self,
+        k: &Kernel,
+        interval: &Extent1d,
+        desired_accuracy: f64,
+        owner_zone_tol_3d: Option<f64>,
+    ) -> Result<f64> {
         // Now compute a reasonable a chord height tolerance based on
         // approximate total size of the curve.
         // Sample at 5 points to get an Idea of how big the curve is.
@@ -1678,9 +1706,10 @@ impl Curve {
         // which values are optimal for the length function.
         let angular_tol = 90.0; // 90 degrees might be ok
 
-        // Create the cache
+        // Create the cache (over the curve itself upstream: an exact copy that keeps
+        // the owner, not the copy constructor's fixed-up knots)
         let mut cache: CurveCache<()> = CurveCache::new(
-            self.clone(),
+            self.clone_for_evaluation()?,
             *interval,
             CurveCacheOptions {
                 make_full_tree: true,
@@ -1693,6 +1722,7 @@ impl Curve {
                 min_parametric_ratio: 0.0001,
             },
         );
+        cache.set_owner_zone_tol_3d(owner_zone_tol_3d);
         let degenerate = interval.length() < EFF_ZERO;
         let tessellated = degenerate || ignored(cache.tessellate(k))?.is_some();
 

@@ -18,6 +18,7 @@
 //! | `revert_change` (private) | `SmTemporaryRadiusChange::Revert` |
 //! | [`FilletLaw::linear`] | `SmLinearFilletLaw::SmLinearFilletLaw` |
 //! | [`FilletLaw::bspline_elliptical`] | `SmBSplineFilletLaw::SmBSplineFilletLaw` (elliptical blend) |
+//! | [`FilletLaw::bspline`] | `SmBSplineFilletLaw::SmBSplineFilletLaw(SmBSplineCurve*, const SmExtent1d&)` |
 //!
 //! Deviations:
 //! - **Object model.** As in `p3`, solvers, corners, fillet geometry, surface
@@ -50,7 +51,9 @@
 //!   plus one step, past which the port returns [`SolidError::InvalidInput`].
 //! - **Law evaluation status.** `SmTemporaryRadiusChange::SetUp` ignores the status of
 //!   `SmFilletLaw::Evaluate` and reads its first value, uninitialised after a failure;
-//!   the port propagates the error.
+//!   the port propagates the error before reading that value (UB-252). Constructors
+//!   retain pinned status handling by default; `new_with_fixes` and the matching
+//!   scope helper opt into reporting setup errors before entering the body (#458).
 //! - The upstream debug drawing (`SM_GFX_CODE`) is omitted.
 //! - Calls into units that are not ported return [`SolidError::Unported`] through the
 //!   adapter defaults of [`ExecutiveAccess`].
@@ -220,6 +223,23 @@ impl FilletLaw {
         if let Some(map) = edge_map {
             law.edge_map = *map;
         }
+        if law.edge_map.length() < EFF_ZERO {
+            law.edge_map = Extent1d::from_raw(0.0, 1.0);
+        }
+        law
+    }
+
+    /// `SmBSplineFilletLaw(pCurve, crEdgeMap)`: the radius is the x coordinate of
+    /// `law_curve` (which the law takes over), and `edge_map` is the part of the
+    /// curve's parameter range that maps onto the edge; `[0, 1]` when it is shorter
+    /// than `SM_EFF_ZERO`.
+    #[must_use]
+    pub fn bspline(law_curve: BSplineCurve, edge_map: &Extent1d) -> Self {
+        let mut law = Self::new(FilletLawKind::BSpline {
+            law_curve,
+            extended_law: None,
+        });
+        law.edge_map = *edge_map;
         if law.edge_map.length() < EFF_ZERO {
             law.edge_map = Extent1d::from_raw(0.0, 1.0);
         }
@@ -583,6 +603,9 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
             trimming: true,
             classification: true,
         };
+        // the fork's (WR-631): no cliff overflow, no open ends yet
+        self.cliff_overflow = false;
+        self.open_ends.clear();
 
         let num_filleted_edges = params.edges.len();
         if num_filleted_edges < 1 {
@@ -644,6 +667,7 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
             .ok_or_else(|| first("no radius"))?;
         let mut generator: Option<O> = None;
 
+        let at_thirds = self.blend_curve_at_thirds;
         let generator_spec = |kind: FilletSurfaceGeneratorType, circular_tol: f64| match kind {
             FilletSurfaceGeneratorType::Linear => Some(FilletSurfaceGenerator::Linear),
             FilletSurfaceGeneratorType::Circular => Some(FilletSurfaceGenerator::circular(
@@ -652,10 +676,13 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
                 false,
                 false,
             )),
-            FilletSurfaceGeneratorType::BlendCurve => Some(FilletSurfaceGenerator::blend_curve(
-                params.thumbweight,
-                params.continuity,
-            )),
+            FilletSurfaceGeneratorType::BlendCurve => {
+                Some(FilletSurfaceGenerator::blend_curve_at_thirds(
+                    params.thumbweight,
+                    params.continuity,
+                    at_thirds,
+                ))
+            }
             FilletSurfaceGeneratorType::Unknown => None,
         };
 
@@ -1496,12 +1523,36 @@ pub struct TemporaryRadiusChange<O> {
 
 impl<O: ClassObject + SolutionObject + Ord> TemporaryRadiusChange<O> {
     /// The constructor: records the solver, rail and side edge use and runs
-    /// [`TemporaryRadiusChange::set_up`], whose status it ignores.
+    /// [`TemporaryRadiusChange::set_up`], ignoring ordinary statuses as upstream.
+    /// Use [`Self::new_with_fixes`] to opt into reporting setup failure.
     ///
     /// # Errors
     ///
-    /// [`SolidError::Unported`] from the set-up.
+    /// Unported dependencies or preparation requests from the setup.
     pub fn new<A>(access: &mut A, fs: O, rail_index: usize, side_eu: O) -> Result<Self>
+    where
+        A: ExecutiveAccess<O> + ?Sized,
+    {
+        Self::new_with_fixes(
+            access,
+            fs,
+            rail_index,
+            side_eu,
+            &crate::kernel::UpstreamFixes::default(),
+        )
+    }
+
+    /// Constructs a radius change with the caller's opt-in upstream policy.
+    /// `temporary_radius_setup_errors` reports a failed setup before the caller
+    /// starts filleting; the original constructor keeps its default call shape.
+    /// Unported dependencies still propagate under either policy.
+    pub fn new_with_fixes<A>(
+        access: &mut A,
+        fs: O,
+        rail_index: usize,
+        side_eu: O,
+        fixes: &crate::kernel::UpstreamFixes,
+    ) -> Result<Self>
     where
         A: ExecutiveAccess<O> + ?Sized,
     {
@@ -1513,7 +1564,12 @@ impl<O: ClassObject + SolutionObject + Ord> TemporaryRadiusChange<O> {
             fs,
             rail_idx: rail_index,
         };
-        ignored(change.set_up(access))?;
+        let setup = change.set_up(access);
+        if fixes.temporary_radius_setup_errors {
+            setup?;
+        } else {
+            ignored(setup)?;
+        }
         Ok(change)
     }
 
@@ -1717,7 +1773,32 @@ where
     O: ClassObject + SolutionObject + Ord,
     A: ExecutiveAccess<O> + ?Sized,
 {
-    let change = TemporaryRadiusChange::new(access, fs, rail_index, side_eu)?;
+    with_temporary_radius_change_with_fixes(
+        access,
+        fs,
+        rail_index,
+        side_eu,
+        &crate::kernel::UpstreamFixes::default(),
+        body,
+    )
+}
+
+/// Runs a temporary radius scope using the caller's upstream fix policy.
+/// With `temporary_radius_setup_errors`, a setup failure returns before `body`.
+/// A completed setup is reverted even when `body` fails.
+pub fn with_temporary_radius_change_with_fixes<O, A, T>(
+    access: &mut A,
+    fs: O,
+    rail_index: usize,
+    side_eu: O,
+    fixes: &crate::kernel::UpstreamFixes,
+    body: impl FnOnce(&mut A) -> Result<T>,
+) -> Result<T>
+where
+    O: ClassObject + SolutionObject + Ord,
+    A: ExecutiveAccess<O> + ?Sized,
+{
+    let change = TemporaryRadiusChange::new_with_fixes(access, fs, rail_index, side_eu, fixes)?;
     let result = body(access);
     let reverted = change.revert(access);
     match result {
@@ -1921,6 +2002,31 @@ mod tests {
         assert_eq!((law.edge_map.min(), law.edge_map.max()), (0.25, 0.75));
         let short = Extent1d::from_min_max(0.5, 0.5);
         let law = FilletLaw::linear(1.0, 2.0, Some(&short));
+        assert_eq!((law.edge_map.min(), law.edge_map.max()), (0.0, 1.0));
+    }
+
+    #[test]
+    fn bspline_law_keeps_curve_and_edge_map() {
+        let curve = || {
+            BSplineCurve::create_line_segment(
+                3,
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let map = Extent1d::from_min_max(0.25, 0.75);
+        let law = FilletLaw::bspline(curve(), &map);
+        assert!(matches!(
+            law.kind,
+            FilletLawKind::BSpline {
+                extended_law: None,
+                ..
+            }
+        ));
+        assert_eq!((law.edge_map.min(), law.edge_map.max()), (0.25, 0.75));
+        let short = Extent1d::from_min_max(0.5, 0.5);
+        let law = FilletLaw::bspline(curve(), &short);
         assert_eq!((law.edge_map.min(), law.edge_map.max()), (0.0, 1.0));
     }
 

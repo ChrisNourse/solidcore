@@ -166,7 +166,7 @@ fn as_sm_err(e: SolidError) -> SolidError {
 /// input upstream mishandles, e.g. `FindOuterLoops`' zero-area loop, UB-119) go through.
 fn plane_failed(e: SolidError) -> SolidError {
     match e {
-        SolidError::InvalidInput { .. } => e,
+        SolidError::InvalidInput { .. } | SolidError::PortInvariant { .. } => e,
         other => as_sm_err(other),
     }
 }
@@ -1295,7 +1295,6 @@ mod tests {
     use crate::geom::attribute::AttributeStore;
     use crate::math::Point2;
     use crate::surface::plane::Plane;
-    use std::collections::BTreeMap;
 
     fn code(e: &SolidError) -> Option<i32> {
         match e {
@@ -1310,7 +1309,7 @@ mod tests {
     ) -> (R, Brep) {
         let mut k = Kernel::default();
         let mut b = p3::new_brep(&mut k, tol::USE_DEFAULT, tol::USE_DEFAULT).unwrap();
-        let mut records = BTreeMap::new();
+        let mut records = crate::topology::topology::NotifyRecords::new();
         let mut attributes = AttributeStore::default();
         let mut env = NotifyEnv {
             records: &mut records,

@@ -1,19 +1,10 @@
-#### WR-474. `SmCurve::CalculateTightBoundingBox` adds tangent-discontinuous and last knots outside the queried interval
+#### WR-474. `SmCurve::CalculateTightBoundingBox` adds tangent-discontinuous and last knots outside the queried interval (#1054)
 - **Severity:** Wrong result
 - **Area:** Curves
-- **Location:** `source/SMLib/src/SmCurve.cpp:10277`, `SmCurve::CalculateTightBoundingBox` (def. `:10248`).
-- **What happens:** After adding the interval end points, the B-spline branch collects the tangent-discontinuous knots and the last knot to add to the tight box. The loop
-
-  ```cpp
-  for (ULONG i=1; i<sKnots.GetSize(); i++) {
-      if (i==sKnots.GetSize()-1 || sContinuities[i] <= SM_CT_C1 ) {
-          EvaluatePoint( sKnots[i], sPt );
-          sTightBox.AddPoint3d( sPt );
-      }
-  }
-  ```
-
-  adds every such knot **regardless of whether the knot value lies inside `crInterval`**. Only the end points are clipped to the interval; the knots are not. A knot that is outside the queried interval is a point the curve never reaches over that interval, so including it enlarges the box to a point the edge does not cover. This is exactly the defect fixed in the Rust port as `CalculateTightBoundingBox holds knots inside the interval only` (issue #1054, PR `fix/calculate-tight-bounding-box-interval-only`): the Rust side keeps only the knots strictly inside the interval (`knot > interval.min() && knot < interval.max()`), which is the correct behaviour.
-- **Trigger:** `CalculateTightBoundingBox` of a B-spline / ellipse curve over a sub-interval that excludes an interior tangent-discontinuous knot (or, for a curve whose last knot is outside the interval).
-- **How found:** generated difftest case and the `tight_box_*` fixtures of `curve.curve_p9`. The pinned upstream reference (v1.0.1) returns the enlarged box; the corrected Rust port returns the smaller box. Reverting the Rust fix makes `curve.curve_p9` pass 3126/3126 against the reference, confirming the divergence is solely this knot check.
-- **Confirmed:** yes, the `tight_box_ellipse_partial`, `tight_box_sub_ellipse_partial`, `tight_box_sub_ellipse_tilted` and `tight_box_degenerate_interval_ellipse` fixtures plus 49 generated cases of `unit.curve.curve_p9` (see `crates/difftest/known_mismatches/curve.curve_p9.toml`).
+- **Location:** `source/SMLib/src/SmCurve.cpp:10276`-`:10281` (at 3fd5b95), `SmCurve::CalculateTightBoundingBox` (def. `:10248`).
+- **What happens:** after adding the interval's end points, the B-spline branch adds every knot with `i == sKnots.GetSize()-1 || sContinuities[i] <= SM_CT_C1`, whether or not the knot lies inside `crInterval`. A knot outside the interval is a point the curve never reaches over it, so the box of an edge on part of a NURBS curve (or an ellipse, which is a B-spline kind) is enlarged. The callers `SmEdge::CalculateTightBoundingBox`, the face and B-rep tight boxes, and so `smlib_brep_bounds`, inherit the enlarged box.
+- **Trigger:** an imported sphere cap (R 50, cap from the pole to polar angle 30 deg): its seam is 30 deg of a quarter-circle NURBS, knots {0, 1}, interval [0, 0.341]. The box takes in knot 1, (-43.30, 0, 25), so the bounds come out min (-43.30, -25, 25) where (-25, -25, 43.30) is right.
+- **How found:** SolidCraft's rig (import/3806), reported as tangency-labs/solidcore#1054; the Rust fix and its first regression test are PapaEcho13's (#1561).
+- **Confirmed:** yes. Forcing the fix on in the port makes difftest disagree with the pinned C++ in exactly the knot-outside-interval cases (`curve.curve_p9`, `query.edge`, `query.face_p1`, `query.face_p3`, `query.brep`), with the C++ box the larger one.
+- **Fix:** the fork commit "SMLib: a curve's tight box holds the knots inside its interval only": add a knot only when `crInterval.GetMin() < knot < crInterval.GetMax()` and it is tangent discontinuous (the interval's ends are in the box already).
+- **Rust port:** `Curve::calculate_tight_bounding_box` behaves as upstream by default. With `Kernel::fixes.curve_tight_box_interval_knots` it adds only the tangent-discontinuous knots strictly inside the interval; `crates/solidcore/tests/issue_1054_tight_box_interval_knots.rs` checks both settings (a half quarter-circle, and the issue's sphere-cap seam).

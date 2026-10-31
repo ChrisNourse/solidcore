@@ -69,7 +69,9 @@
 //!   with more `u` than `v` derivatives; the port returns `InvalidInput` there, and
 //!   for derivative orders above `MAX_DERIVATIVE` (upstream writes into a caller-sized
 //!   array; the port allocates it, as `BSplineSurface::evaluate` bounds it).
-//!   Entries upstream leaves untouched are zero.
+//!   Entries upstream leaves untouched are zero: the unwritten lower half is 0 here and
+//!   `SM_UNDEF` upstream (a fresh caller's `SmVector3d` array); unreachable today (no
+//!   caller reads it).
 //! - **`Reparameterize`** computes a new origin only in debug code: the release
 //!   build keeps the old origin while changing the scales and the domain, so the
 //!   analytic plane moves unless the new domain starts where the old one did. The
@@ -297,6 +299,21 @@ impl Plane {
     /// Detaches a NURB cell shared with evaluation copies ([`Plane::clone_shared`]).
     pub(crate) fn detach_nurb(&mut self) {
         self.base.detach_nurb();
+    }
+
+    /// The `SmBSplineSurface` part, mutable (CO-PORTED by unit `blend.fillet_removal`,
+    /// whose `ExpandBoundarySpan` edits the plane's NURB).
+    pub(crate) fn base_mut(&mut self) -> &mut BSplineSurface {
+        &mut self.base
+    }
+
+    /// `UpdateAnalyticalDomain(crNewNurbsDomain)` (`SmPlane.h`, CO-PORTED by unit
+    /// `blend.fillet_removal`): the analytic domain becomes `new_nurbs_domain` and the
+    /// NURB is dropped (made again from the analytic data when next needed).
+    pub(crate) fn update_analytical_domain(&mut self, new_nurbs_domain: &Extent2d) {
+        self.anal_uv_domain = *new_nurbs_domain;
+        self.base.nurb = crate::nurbs::b_spline_surface::p1::NurbSlot::none();
+        self.base.nurb_is_borrowed = false;
     }
 
     /// A copy of every member as is (no NURB is made).
@@ -920,6 +937,19 @@ impl Plane {
     /// Those of [`BSplineSurface::canonical`], [`BSplineSurface::set_canonical`] (the
     /// swap bit is then restored) and [`Plane::rebuild_step_from_nurb_parameters`].
     pub fn swap_uv(&mut self) -> Result<()> {
+        self.swap_uv_notifying(&mut |_| Ok(()))
+    }
+
+    /// [`Plane::swap_uv`] with `SetCanonical`'s edit notifications sent through
+    /// `notify` ([`BSplineSurface::set_canonical_notifying`]).
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Plane::swap_uv`] and of `notify`.
+    pub(crate) fn swap_uv_notifying(
+        &mut self,
+        notify: &mut crate::nurbs::b_spline_surface::p2::EditNotify<'_>,
+    ) -> Result<()> {
         // get current surface description
         self.ensure_nurb();
         let c = self.base.canonical()?;
@@ -935,19 +965,22 @@ impl Plane {
         transpose(&mut weights, num_v_cpts);
 
         // Transpose Surface definition; on failure, restore the bit
-        let status = self.base.set_canonical(&CanonicalSurfaceData {
-            u_degree: c.v_degree,
-            v_degree: c.u_degree,
-            control_points: &cpts,
-            form: c.form,
-            u_multiplicities: &c.v_multiplicities,
-            v_multiplicities: &c.u_multiplicities,
-            u_knots: &c.v_knots,
-            v_knots: &c.u_knots,
-            knot_type: c.knot_type,
-            weights: Some(&weights),
-            uv_domain: None,
-        });
+        let status = self.base.set_canonical_notifying(
+            &CanonicalSurfaceData {
+                u_degree: c.v_degree,
+                v_degree: c.u_degree,
+                control_points: &cpts,
+                form: c.form,
+                u_multiplicities: &c.v_multiplicities,
+                v_multiplicities: &c.u_multiplicities,
+                u_knots: &c.v_knots,
+                v_knots: &c.u_knots,
+                knot_type: c.knot_type,
+                weights: Some(&weights),
+                uv_domain: None,
+            },
+            notify,
+        );
         if let Err(e) = status {
             self.toggle_swap_uv_bit();
             return Err(e);
