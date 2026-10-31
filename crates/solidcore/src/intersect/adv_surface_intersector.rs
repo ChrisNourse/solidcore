@@ -1886,17 +1886,24 @@ mod tests {
     fn audit_483_singularity_alignment_uses_the_captured_policy() {
         let s = plane();
         let d = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
-        for checked in [false, true] {
+        for (checked, fix_dupin_bottom_axis) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let mut k = Kernel::default();
             k.fixes.ssi_alignment_statuses = checked;
+            k.fixes.dupin_bottom_hyperbola_axis = fix_dupin_bottom_axis;
             let si = SurfaceIntersector::new(&k, &s, &d, &s, &d, false).unwrap();
             assert_eq!(si.alignment_statuses, checked);
             k.fixes.ssi_alignment_statuses = !checked;
             let mut point = TsectPnt::new();
             point.surface_pv[0] = eval(Vec3::X, Vec3::Y, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
             point.surface_pv[1] = eval(Vec3::X, Vec3::Y, Vec3::Z, Vec3::ZERO, Vec3::ZERO);
-            let result =
-                si.adv_compute_singularity_point([Point2::ZERO; 2], &mut point, Some(Vec3::ZERO));
+            let result = si.adv_compute_singularity_point(
+                [Point2::ZERO; 2],
+                &mut point,
+                Some(Vec3::ZERO),
+                k.fixes.dupin_bottom_hyperbola_axis,
+            );
             if checked {
                 assert_eq!(
                     result.unwrap_err(),

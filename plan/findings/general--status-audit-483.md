@@ -113,3 +113,20 @@ commit changes documentation only (module comments, records and unit notes).
 The C++ key remains `v1-3fd5b9548d19-726643fb17a52b7d`; no reference rebuild,
 tolerance change, new rejection, new parked case or coverage waiver was needed.
 Historical reports under `bin/issue-1781-*` are not reused as current-head evidence.
+
+
+## CI integration after the SSI API changed
+
+The automatic PR merge tested by CI run `41180451358` included PR #1938's
+`adv_compute_singularity_point` signature extension (`fix_dupin_bottom_axis`).
+The #483 captured-policy regression still supplied three arguments, so both the
+workspace test build and all-targets clippy failed with `E0061`; the native sweep,
+perturbation and coverage jobs passed. The earlier local results above belong to
+implementation revision `d54dfd462`, before that main change.
+
+Merged main `f5475831163a4d3b15d37338fb715249a21c6a0b` and updated the regression to
+forward `k.fixes.dupin_bottom_hyperbola_axis`, as the production caller does. It
+now checks the four combinations of the alignment-status and Dupin-axis policies.
+The focused regression passes on the merged source. This correction changes test
+code only; the library changes in the merge are those already accepted on main.
+Updated CI verification is recorded in PR #1775.
