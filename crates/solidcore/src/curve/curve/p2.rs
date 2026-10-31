@@ -2280,15 +2280,24 @@ pub(crate) fn inversion_passed_on(inv: &Inversion, pass_on: bool) -> Result<()> 
     Ok(())
 }
 
+/// The outcome of [`ignored_or_soft`].
+#[derive(Debug)]
+pub(crate) enum Soft<T> {
+    /// The call failed and, with the opt-in fix, the caller gives the fork's answer.
+    Failed,
+    /// [`ignored`]'s value: the call's result, `None` for a failure upstream ignores.
+    Kept(Option<T>),
+}
+
 /// [`ignored`] at a site of a status-less predicate or helper where SMLib drops the
 /// status and the fork answers only from what it can show (tangency-labs/smlib
-/// 8311f8e): `None` when, with `soft` (the opt-in
-/// [`crate::kernel::UpstreamFixes::query_statuses_pass_on`]), the call failed, so the
-/// caller gives the fork's answer; otherwise `Some` of [`ignored`]'s value.
-pub(crate) fn ignored_or_soft<T>(r: Result<T>, soft: bool) -> Result<Option<Option<T>>> {
+/// 8311f8e): [`Soft::Failed`] when, with `soft` (the opt-in
+/// [`crate::kernel::UpstreamFixes::query_statuses_pass_on`]), the call failed;
+/// otherwise [`Soft::Kept`] of [`ignored`]'s value.
+pub(crate) fn ignored_or_soft<T>(r: Result<T>, soft: bool) -> Result<Soft<T>> {
     match ignored(r)? {
-        None if soft => Ok(None),
-        v => Ok(Some(v)),
+        None if soft => Ok(Soft::Failed),
+        v => Ok(Soft::Kept(v)),
     }
 }
 

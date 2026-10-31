@@ -81,7 +81,7 @@
 use crate::curve::curve::p2::FindCurveDistanceExtrema;
 use crate::curve::curve::p2::{
     at, ignored_or_soft, unitize_or_pass_on, unitize_tangent, Curve, CurveEvaluate, CurveKind,
-    CurvePropertyType,
+    CurvePropertyType, Soft,
 };
 use crate::curve::curve::p3::eval_n;
 use crate::curve::ellipse::Ellipse;
@@ -1011,7 +1011,7 @@ pub fn has_plane_crossings(k: &Kernel, curve: &Curve, planes: &[Plane]) -> Resul
         // find all Curve/Plane intersections
         // (status ignored: an error leaves the solution array empty; with the opt-in
         // fix a crossing cannot be ruled out then, tangency-labs/smlib 8311f8e)
-        let Some(solutions) = ignored_or_soft(
+        let Soft::Kept(solutions) = ignored_or_soft(
             plane_global_curve_intersect(k, plane, curve, &ivl, EFF_ZERO),
             k.fixes.query_statuses_pass_on,
         )?

@@ -87,7 +87,7 @@
 use crate::curve::curve::knots_ignoring_status;
 use crate::curve::curve::p1::{ApproximateCurveOptions, GlobalPointSolveOptions};
 use crate::curve::curve::p2::{
-    at, ignored_or_soft, snap_sol_to_specified_endpoint, Curve, CurveKind, CurvePropertyType,
+    at, ignored_or_soft, snap_sol_to_specified_endpoint, Curve, CurveKind, CurvePropertyType, Soft,
 };
 use crate::curve::curve::p3::{local_curve_intersect, PointSolveOptions};
 use crate::curve::curve::p5::{
@@ -593,7 +593,7 @@ impl Curve {
         )?;
         // with the opt-in fix a curve that cannot be boxed is not shown planar; its
         // outputs are not written (tangency-labs/smlib 8311f8e)
-        let Some(boxes) = boxes else {
+        let Soft::Kept(boxes) = boxes else {
             return Ok(Planar {
                 is_planar: false,
                 point: Vec3::UNDEF,

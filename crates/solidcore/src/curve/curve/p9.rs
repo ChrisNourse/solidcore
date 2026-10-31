@@ -83,7 +83,7 @@
 
 use crate::curve::curve::p2::{
     ignored_or_soft, proj_signed_angle, CcGlobalSolver, CciGlobalSolver, Curve, CurveKind,
-    CurvePropertyType, BSPLINE_CURVE_TYPE, LINE_TYPE,
+    CurvePropertyType, Soft, BSPLINE_CURVE_TYPE, LINE_TYPE,
 };
 use crate::curve::curve::p3::local_curve_intersect;
 use crate::curve::curve::p3::PointSolveOptions;
@@ -1755,7 +1755,7 @@ impl Curve {
             };
             // (status ignored; with the opt-in fix a curve that cannot be classified is
             // not shown on the positive side, tangency-labs/smlib 8311f8e)
-            let Some(sols) = ignored_or_soft(
+            let Soft::Kept(sols) = ignored_or_soft(
                 self.global_property_analysis(
                     k,
                     &ivl,

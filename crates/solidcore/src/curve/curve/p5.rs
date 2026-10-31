@@ -100,7 +100,7 @@
 
 use crate::curve::curve::p2::{
     convert_to_parameter_delta, evaluate_geometric, evaluate_step, ignored_or_soft,
-    unitize_or_pass_on, unitize_tangent, Curve, CurveEvaluate, CurveKind, CurvePropertyType,
+    unitize_or_pass_on, unitize_tangent, Curve, CurveEvaluate, CurveKind, CurvePropertyType, Soft,
     BSPLINE_CURVE_TYPE,
 };
 use crate::curve::curve::p3::eval_n;
@@ -267,7 +267,7 @@ fn curve_is_line_base(
 
         // exact tangent values (status ignored; with the opt-in fix a curve that
         // cannot be evaluated is not shown a line, tangency-labs/smlib 8311f8e)
-        let Some(v) = ignored_or_soft(
+        let Soft::Kept(v) = ignored_or_soft(
             curve.evaluate(k, t, 1, false, false),
             k.fixes.query_statuses_pass_on,
         )?
@@ -643,7 +643,7 @@ impl Curve {
                 // that cannot be evaluated is not shown linear, tangency-labs/smlib
                 // 8311f8e)
                 let start = self.natural_interval().min();
-                let Some(v) = ignored_or_soft(
+                let Soft::Kept(v) = ignored_or_soft(
                     self.evaluate(k, start, 1, false, false),
                     k.fixes.query_statuses_pass_on,
                 )?
@@ -702,7 +702,8 @@ impl Curve {
         // tangency-labs/smlib 8311f8e)
         let soft = k.fixes.query_statuses_pass_on;
         if base_vec.length_squared() < tol * tol {
-            let Some(p) = ignored_or_soft(self.evaluate_point(k, domain.evaluate(0.38)), soft)?
+            let Soft::Kept(p) =
+                ignored_or_soft(self.evaluate_point(k, domain.evaluate(0.38)), soft)?
             else {
                 return Ok(out);
             };
@@ -711,7 +712,8 @@ impl Curve {
             }
             base_vec = pt - start_pt;
             if base_vec.length_squared() < tol * tol {
-                let Some(p) = ignored_or_soft(self.evaluate_point(k, domain.evaluate(0.62)), soft)?
+                let Soft::Kept(p) =
+                    ignored_or_soft(self.evaluate_point(k, domain.evaluate(0.62)), soft)?
                 else {
                     return Ok(out);
                 };
@@ -742,7 +744,7 @@ impl Curve {
             let frac = ii as f64 / num_spans;
             let t = domain.evaluate(frac);
             // nonZeroTangent values (status ignored)
-            let Some(v) = ignored_or_soft(self.evaluate(k, t, 1, false, true), soft)? else {
+            let Soft::Kept(v) = ignored_or_soft(self.evaluate(k, t, 1, false, true), soft)? else {
                 return Ok(out);
             };
             if let Some(v) = v {
@@ -1007,14 +1009,16 @@ pub fn crvs_cleanup(k: &Kernel, curves: &mut Vec<Curve>, tol: f64) -> Result<Cle
         // that cannot be evaluated is not shown tiny, it is kept, tangency-labs/smlib
         // 8311f8e)
         let soft = k.fixes.query_statuses_pass_on;
-        let Some(p) = ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(0.0)), soft)? else {
+        let Soft::Kept(p) = ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(0.0)), soft)?
+        else {
             ii += 1;
             continue;
         };
         if let Some(p) = p {
             start_point1 = p;
         }
-        let Some(p) = ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(1.0)), soft)? else {
+        let Soft::Kept(p) = ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(1.0)), soft)?
+        else {
             ii += 1;
             continue;
         };
@@ -1025,7 +1029,8 @@ pub fn crvs_cleanup(k: &Kernel, curves: &mut Vec<Curve>, tol: f64) -> Result<Cle
         // If this is a tiny curve, check midpoint
         if (end_point1 - start_point1).length_squared() < tol_sq {
             // Test for closed curve by examining near midpoint
-            let Some(p) = ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(0.4567)), soft)?
+            let Soft::Kept(p) =
+                ignored_or_soft(crv1.evaluate_point(k, domain1.evaluate(0.4567)), soft)?
             else {
                 ii += 1;
                 continue;
@@ -1128,7 +1133,8 @@ pub fn remove_duplicate_curves(k: &Kernel, curves: &mut Vec<Option<Curve>>) -> R
                 // (with the opt-in fix points that cannot be evaluated do not show a
                 // duplicate, tangency-labs/smlib 8311f8e)
                 let soft = k.fixes.query_statuses_pass_on;
-                let Some(p) = ignored_or_soft(crv1.evaluate_point(k, ivl1.evaluate(t)), soft)?
+                let Soft::Kept(p) =
+                    ignored_or_soft(crv1.evaluate_point(k, ivl1.evaluate(t)), soft)?
                 else {
                     duplicate = false;
                     break;
@@ -1136,7 +1142,8 @@ pub fn remove_duplicate_curves(k: &Kernel, curves: &mut Vec<Option<Curve>>) -> R
                 if let Some(p) = p {
                     p1 = p;
                 }
-                let Some(p) = ignored_or_soft(crv2.evaluate_point(k, ivl2.evaluate(t)), soft)?
+                let Soft::Kept(p) =
+                    ignored_or_soft(crv2.evaluate_point(k, ivl2.evaluate(t)), soft)?
                 else {
                     duplicate = false;
                     break;
@@ -1280,7 +1287,7 @@ impl Curve {
             // (status ignored; `SmCurve::Evaluate`'s default `bNonZeroTangents = TRUE`;
             // with the opt-in fix a curve that cannot be evaluated is not shown on a
             // boundary, tangency-labs/smlib 8311f8e)
-            let Some(v) = ignored_or_soft(
+            let Soft::Kept(v) = ignored_or_soft(
                 self.evaluate(k, t, 1, false, true),
                 k.fixes.query_statuses_pass_on,
             )?
@@ -1334,7 +1341,8 @@ pub fn is_periodic<C: CurveEvaluate + ?Sized>(
         // nonZeroTangent values (statuses ignored; with the opt-in fix a curve that
         // cannot be evaluated is not shown periodic, tangency-labs/smlib 8311f8e)
         let soft = k.fixes.query_statuses_pass_on;
-        let Some(v) = ignored_or_soft(curve.evaluate(k, interval.min(), 1, true, true), soft)?
+        let Soft::Kept(v) =
+            ignored_or_soft(curve.evaluate(k, interval.min(), 1, true, true), soft)?
         else {
             return Ok(false);
         };
@@ -1343,7 +1351,8 @@ pub fn is_periodic<C: CurveEvaluate + ?Sized>(
                 *d = s;
             }
         }
-        let Some(v) = ignored_or_soft(curve.evaluate(k, interval.max(), 1, true, true), soft)?
+        let Soft::Kept(v) =
+            ignored_or_soft(curve.evaluate(k, interval.max(), 1, true, true), soft)?
         else {
             return Ok(false);
         };
@@ -1408,7 +1417,7 @@ pub fn is_point_solution_across_closed_seam_boundary<O: Copy>(
         let soft = k.fixes.query_statuses_pass_on;
         let mut pv1 = [Vec3::UNDEF; 2];
         let mut pv2 = [Vec3::UNDEF; 2];
-        let Some(v) = ignored_or_soft(this.evaluate(k, start1, 1, true, true), soft)? else {
+        let Soft::Kept(v) = ignored_or_soft(this.evaluate(k, start1, 1, true, true), soft)? else {
             return Ok(false);
         };
         if let Some(v) = v {
@@ -1416,7 +1425,7 @@ pub fn is_point_solution_across_closed_seam_boundary<O: Copy>(
                 *d = s;
             }
         }
-        let Some(v) = ignored_or_soft(other.evaluate(k, start2, 1, true, true), soft)? else {
+        let Soft::Kept(v) = ignored_or_soft(other.evaluate(k, start2, 1, true, true), soft)? else {
             return Ok(false);
         };
         if let Some(v) = v {
@@ -1590,7 +1599,10 @@ where
     let soft = k.fixes.query_statuses_pass_on;
     let interval = curve.natural_interval();
     let point = |t: f64| -> Result<Option<Point3>> {
-        Ok(ignored_or_soft(curve.evaluate_point(k, t), soft)?.map(|p| p.unwrap_or(Vec3::UNDEF)))
+        match ignored_or_soft(curve.evaluate_point(k, t), soft)? {
+            Soft::Failed => Ok(None),
+            Soft::Kept(p) => Ok(Some(p.unwrap_or(Vec3::UNDEF))),
+        }
     };
     let Some(p1) = point(interval.evaluate(0.00))? else {
         return Ok(None);
@@ -2612,7 +2624,7 @@ mod tests {
 
     /// A curve that cannot be evaluated: a B-spline without its NURB.
     fn unevaluable() -> Curve {
-        Curve::from(crate::nurbs::b_spline_curve::BSplineCurve::new(3))
+        Curve::from(BSplineCurve::new(3))
     }
 
     fn kernels() -> (Kernel, Kernel) {
