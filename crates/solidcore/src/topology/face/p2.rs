@@ -3565,7 +3565,7 @@ mod tests {
         k.fixes.face_points_span_domain = true;
         let r = points_in_face(&mut k, &mut b, f, 1).unwrap();
         assert_eq!(r.uv, vec![Point2::new(3.5, -6.75)]);
-        // the plane's frame is X = Y, Y = -X, Z = Z: p = u * Y + v * -X
+        // The plane's frame gives the world point (-v, u, 0).
         assert_eq!(r.pv, vec![Point3::new(6.75, 3.5, 0.0), Vec3::Z]);
 
         // a negative-u, positive-v domain samples its centre too

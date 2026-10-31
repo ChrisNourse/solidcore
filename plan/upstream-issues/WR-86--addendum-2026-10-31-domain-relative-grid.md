@@ -1,6 +1,6 @@
 Updates: WR-86
 
-#### WR-86 addendum (2026-10-31): domain-relative rectangular grid, opt-in
+#### WR-86 (update, 2026-10-31). Domain-relative rectangular grid, opt-in
 
 - **What changed:** The port now has an opt-in fix for the rectangular branch of
   `SmFace::GetPointsInFace`. With `Kernel::fixes.face_points_span_domain` on, each
@@ -11,7 +11,8 @@ Updates: WR-86
   unchanged.
 - **Location (current pin):** `source/SMLib/src/SmFace.cpp:21455`-`21677`,
   `SmFace::GetPointsInFace` (def. `:21455`); the wrong grid is `:21493`-`:21515`. The
-  original record's line numbers (`:21167`-`:21230`) are from an older upstream pin.
+  original record's definition at `:21167` and location `:21206`-`:21230` are from an
+  older upstream pin.
 - **Effect:** on a rectangularly trimmed face with UV domain `[3, 4] x [-7, -6.5]`,
   `GetPointsInFace(1, ..)` returns UV `(1/3, 0.25)` by default and `(3.5, -6.75)` with
   the field on. On `[0, 1] x [0, 2]` count 1, the default is `(1/3, 1)` and the field
