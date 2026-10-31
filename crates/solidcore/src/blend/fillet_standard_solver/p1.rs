@@ -1388,12 +1388,10 @@ impl ConstantDistanceFs {
             surface2_rail = Some(other_rail);
             let uv2 = self.surface2_guess(k, brep, other_rail, &mut surface1, uv, pnt)?;
 
-            let domain = self
-                .solver
-                .rail(other_rail)?
-                .base_surface()
-                .natural_uv_domain_with_nurb(k)?;
-            let size: Vec2 = self.solver.surface_extension_factor * domain.size();
+            let other_base = self.solver.rail(other_rail)?.base_surface();
+            let domain = other_base.natural_uv_domain_with_nurb(k)?;
+            // fork WR-609: and the trace's reach (0 without `fillet_trace_reaches_rails`)
+            let size: Vec2 = self.solver.domain_extension(k, Some(other_base), &domain)?;
 
             let n = guess_t.len();
             *interval_mut(intervals, n, OP)? =
@@ -3831,6 +3829,31 @@ mod tests {
         let mut fs = fs;
         fs.set_fillet_trim_type(BoundaryTrimmingType::Bevel);
         assert_eq!(fs.trim_type, BoundaryTrimmingType::Bevel);
+    }
+
+    #[test]
+    fn failed_radius_law_keeps_both_offset_distances() {
+        let mut curve_based = CurveBasedFs::new(1e-6, 0.5, 0.03);
+        curve_based.solver = cr().solver;
+        let mut fs = VariableRadiusFs {
+            curve_based,
+            law: FilletLaw::new(FilletLawKind::Base),
+            law_orientation: false,
+            law_interval: Extent1d::from_min_max(0.0, 1.0),
+        };
+        let distances = |fs: &VariableRadiusFs| {
+            fs.curve_based
+                .solver
+                .surfaces
+                .each_ref()
+                .map(|s| s.as_ref().unwrap().surface.offset_distance())
+        };
+        let before = distances(&fs);
+        let mut point = TsectPnt::new();
+        point.user_doubles[0] = 0.5;
+        let expected = fs.law.evaluate(0.5, &fs.law_interval, false).unwrap_err();
+        assert_eq!(fs.setup_offset_values(&point).unwrap_err(), expected);
+        assert_eq!(distances(&fs), before);
     }
 
     #[test]
