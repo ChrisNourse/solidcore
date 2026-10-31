@@ -146,5 +146,8 @@ fn edge_8_builds_with_the_fix_and_the_trace_toward_the_next_point() {
     let (fixed, v5) = round_cone_edge(5, true, true).unwrap().unwrap();
     let (_, v5_upstream) = round_cone_edge(5, false, false).unwrap().unwrap();
     assert_eq!(fixed, 181);
-    assert!((v5 - v5_upstream).abs() < 1e-7 * v5_upstream, "{v5} {v5_upstream}");
+    assert!(
+        (v5 - v5_upstream).abs() < 1e-7 * v5_upstream,
+        "{v5} {v5_upstream}"
+    );
 }
