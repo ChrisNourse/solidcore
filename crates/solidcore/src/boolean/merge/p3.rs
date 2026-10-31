@@ -1244,15 +1244,15 @@ pub fn boolean_lists_with_notifications(
                                 context: notify.context.as_deref_mut(),
                                 key_of: &crate::topology::loopuse::notify_ref,
                             };
-                            bp7::copy_faces(
+                            bp7::copy_faces_from(
                                 k,
                                 &mut result,
                                 &connected,
                                 &mut component,
                                 true,
+                                source_key,
                                 &face_ref,
                                 &mut component_env,
-                                source_key,
                             )?;
                         } else {
                             // the arena entry keeps no notification state: the copy

@@ -3,9 +3,10 @@
 //! `SM_NO_COPY` attributes and the source keeps its own. solidcore's `copy_faces` named
 //! the new edges and vertices with the caller's one `key_of`, the source's naming: a copy
 //! took the key of the source object of its arena id, and the attribute lists crossed
-//! both ways (a copied edge got two attributes, the source edge the copy's). Now the
-//! source is named by `source_key` and the copies by `env.key_of`; one naming for both,
-//! where the source has attribute lists on keys the copies are given, is refused.
+//! both ways (a copied edge got two attributes, the source edge the copy's). With the
+//! source named apart (`copy_faces_from`) each copy carries its own source's; one naming
+//! for both (`copy_faces`) names the source apart for the copy, and is refused where the
+//! source has attribute lists on keys the copies are given.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 use solidcore::geom::attribute::{Attribute, AttributeStore, Behavior, ObjectKey};
@@ -15,7 +16,7 @@ use solidcore::math::Point3;
 use solidcore::primitive::api_primitives::create_box;
 use solidcore::topology::brep::p2::ArenaNotifyState;
 use solidcore::topology::brep::p3::new_brep;
-use solidcore::topology::brep::p7::copy_faces;
+use solidcore::topology::brep::p7::{copy_faces, copy_faces_from};
 use solidcore::topology::brep::validation::{check_brep, CheckLevel};
 use solidcore::topology::edge::NotifyEnv;
 use solidcore::topology::loopuse::notify_ref;
@@ -41,17 +42,7 @@ fn compact_box(k: &mut Kernel) -> Brep {
     let mut state = ArenaNotifyState::new(&dest);
     let mut env = state.env(None);
     let face = |f: FaceId| notify_ref(EntityRef::Face(f));
-    copy_faces(
-        k,
-        &mut b,
-        &faces,
-        &mut dest,
-        true,
-        &face,
-        &mut env,
-        &notify_ref,
-    )
-    .unwrap();
+    copy_faces(k, &mut b, &faces, &mut dest, true, &face, &mut env).unwrap();
     dest.refresh_cached_topology();
     assert_eq!(dest.edge_list().first(), Some(&EdgeId::from_index(0)));
     dest
@@ -160,15 +151,15 @@ fn copies_through_the_merge_carry_only_their_own_sources_attributes() {
             key_of: &notify_ref,
         };
         let this_face = |f: FaceId| notify_ref(EntityRef::Face(f));
-        let (made, all) = copy_faces(
+        let (made, all) = copy_faces_from(
             &mut k,
             &mut src,
             &[face],
             &mut dest,
             true,
+            &source_ref,
             &this_face,
             &mut env,
-            &source_ref,
         )
         .unwrap();
         assert!(all);
@@ -219,7 +210,6 @@ fn one_naming_for_both_breps_is_refused_where_the_source_has_attributes() {
         true,
         &this_face,
         &mut env,
-        &notify_ref,
     );
     assert!(matches!(r, Err(SolidError::InvalidInput { .. })), "{r:?}");
     // before anything changed
@@ -247,7 +237,6 @@ fn one_naming_for_both_breps_without_attributes_still_copies() {
         true,
         &this_face,
         &mut env,
-        &notify_ref,
     )
     .unwrap();
     assert!(all);

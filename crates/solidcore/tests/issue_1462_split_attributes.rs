@@ -538,7 +538,6 @@ fn copy_faces_with_a_merge_copies_the_face_attributes() {
         true,
         &dest_face,
         &mut state.env(None),
-        &solidcore::topology::loopuse::notify_ref,
     )
     .expect("copy faces");
     assert!(all);

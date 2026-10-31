@@ -31,7 +31,6 @@ fn copied(use_merge: bool) -> (usize, [usize; 3]) {
         use_merge,
         &this_face,
         &mut env,
-        &key_of,
     )
     .unwrap();
     dest.refresh_cached_topology();

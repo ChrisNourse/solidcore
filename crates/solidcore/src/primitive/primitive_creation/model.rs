@@ -806,8 +806,8 @@ impl PrimitiveCreationAccess for PrimitiveModel<'_> {
             source,
             destination,
             |k, src, dst, source_key, this_face, _, env| {
-                crate::topology::brep::p7::copy_faces(
-                    k, src, faces, dst, false, this_face, env, source_key,
+                crate::topology::brep::p7::copy_faces_from(
+                    k, src, faces, dst, false, source_key, this_face, env,
                 )
                 .map(drop)
             },
