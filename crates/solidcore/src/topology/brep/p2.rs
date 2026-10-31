@@ -915,7 +915,11 @@ impl CopyNotifyState {
             dest.take_attributes(),
             &crate::topology::loopuse::notify_ref,
         )?;
-        seed_brep_attributes(&mut state.attributes, src.take_attributes(), &copy_source_ref)?;
+        seed_brep_attributes(
+            &mut state.attributes,
+            src.take_attributes(),
+            &copy_source_ref,
+        )?;
         Ok(state)
     }
 
@@ -944,7 +948,11 @@ impl CopyNotifyState {
         let mut for_src = store.clone();
         let mut for_dest = store;
         give_attributes(src, &mut for_src, &entity_of_copy_source_key)?;
-        give_attributes(dest, &mut for_dest, &crate::topology::loopuse::entity_of_notify_key)?;
+        give_attributes(
+            dest,
+            &mut for_dest,
+            &crate::topology::loopuse::entity_of_notify_key,
+        )?;
         src.set_attributes(for_src);
         dest.set_attributes(for_dest);
         Ok(())

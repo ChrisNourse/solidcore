@@ -1971,7 +1971,6 @@ fn copy_faces_carrying(
     Ok(r)
 }
 
-
 /// `SmBrep::RemoveFaces`.
 fn remove_faces(k: &mut Kernel, b: &mut Brep, faces: &[FaceId]) -> Result<()> {
     let editing = b.editing_enabled();
@@ -2145,8 +2144,11 @@ mod tests {
             .unwrap();
         b.add_attribute(EntityRef::Edge(e0), Attribute::new(20002, Behavior::Copy))
             .unwrap();
-        b.add_attribute(EntityRef::Face(other), Attribute::new(20003, Behavior::Copy))
-            .unwrap();
+        b.add_attribute(
+            EntityRef::Face(other),
+            Attribute::new(20003, Behavior::Copy),
+        )
+        .unwrap();
         b.add_attribute(EntityRef::Face(f0), Attribute::new(20004, Behavior::Temp))
             .unwrap();
         let fbrep = {
@@ -2160,7 +2162,11 @@ mod tests {
             .unwrap()
             .unwrap();
             ex.do_defeature(&mut k).unwrap();
-            ex.into_feature_breps().into_iter().next().flatten().unwrap()
+            ex.into_feature_breps()
+                .into_iter()
+                .next()
+                .flatten()
+                .unwrap()
         };
         let has = |br: &Brep, id: u64, face: bool| {
             if face {
@@ -2175,8 +2181,14 @@ mod tests {
                     .any(|e| br.find_attribute(EntityRef::Edge(e), id).is_some())
             }
         };
-        assert!(has(&fbrep, 20001, true), "copy face attribute on the feature");
-        assert!(has(&fbrep, 20002, false), "copy edge attribute on the feature");
+        assert!(
+            has(&fbrep, 20001, true),
+            "copy face attribute on the feature"
+        );
+        assert!(
+            has(&fbrep, 20002, false),
+            "copy edge attribute on the feature"
+        );
         assert!(!has(&fbrep, 20004, true), "temporary attribute not copied");
         assert!(!has(&fbrep, 20003, true), "other faces stay in the base");
         assert!(b.find_attribute(EntityRef::Face(other), 20003).is_some());
