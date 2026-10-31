@@ -264,13 +264,14 @@ fn faceuse_opposite(brep: &Brep, eu: EdgeuseId, op: &'static str) -> Result<bool
 }
 
 /// `pEdgeuse->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface()` as the base of an
-/// offset surface (the offset shares the face's surface: its owner is kept).
+/// offset surface (the offset shares the face's surface, `m_pSurface(&rSurface)`: an
+/// exact copy, owner kept, without the copy constructor's knot fix-up).
 fn face_base(brep: &Brep, eu: EdgeuseId, op: &'static str) -> Result<(Surface, SurfaceId)> {
     let f = edgeuse::face(brep, eu)?
         .ok_or_else(|| SolidError::invalid_input(op, "edge use without face"))?;
     let s = face::surface(brep, f)?
         .ok_or_else(|| SolidError::invalid_input(op, "face without surface"))?;
-    Ok((s.clone_keeping_owner(), SurfaceId::Face(f)))
+    Ok((s.clone_for_evaluation()?, SurfaceId::Face(f)))
 }
 
 /// The edge-use part of the `SmConstantDistanceFS` and `SmVariableRadiusFS`
@@ -943,13 +944,15 @@ impl EvalNFunctions for GuessSphereEnfo<'_> {
 
 /// `SmLocalSolveNd(sEvalFun, &sIntervals, &sPeriodicities)` set up as both plane
 /// solves do: desired accuracy `SM_EFF_ZERO_SQ`, at most 8 total boundary hits, 30
-/// iterations.
+/// iterations; `k`'s `fixes.oscillating_skips_failed_guesses` is passed on.
 fn plane_local_solver<'a, E: EvalNFunctions + ?Sized>(
+    k: &Kernel,
     eval: &'a mut E,
     intervals: &'a ExtentNd,
     periodicities: &'a [bool],
 ) -> LocalSolveNd<'a, E> {
     let mut ls = LocalSolveNd::new(eval, Some(intervals), Some(periodicities));
+    ls.set_skips_failed_evaluations(k.fixes.oscillating_skips_failed_guesses);
     ls.set_desired_accuracy(EFF_ZERO_SQ);
     ls.set_boundary_handler(BoundaryHandler::TotalBoundaryHits, 8);
     ls.set_maximum_iterations(30);
@@ -1045,7 +1048,7 @@ impl ConstantRadiusAssistedFs {
         let plane_d = -plane_orig.dot(plane_normal);
         let approx_tol_3d = self.solver.approx_tol_3d;
         let mut eval = GuessSphereEnfo::new(k, plane_normal, plane_d, self);
-        let mut ls = plane_local_solver(&mut eval, &intervals, &periodicities);
+        let mut ls = plane_local_solver(k, &mut eval, &intervals, &periodicities);
 
         // Solve it
         let mut sol = ls.solve_it(&guess_t, approx_tol_3d)?;
@@ -1233,7 +1236,7 @@ fn fillet_sphere_solve(
     let approx_tol_3d = solver.solver().approx_tol_3d;
     // (the constructor's "sphere centre and radius" are the plane normal and D)
     let mut eval = SphereEquations(k, FilletSphereSolveEnfo::new(plane_normal, plane_d, solver));
-    let mut ls = plane_local_solver(&mut eval, intervals, periodicities);
+    let mut ls = plane_local_solver(k, &mut eval, intervals, periodicities);
 
     // Solve equations with NewtonRaphson iteration
     let mut sol = ls.solve_it(guess_t, approx_tol_3d)?;
@@ -2075,7 +2078,8 @@ impl VariableRadiusFs {
             let solver = &self.curve_based.solver;
             let surface2 = solver.rail(other_rail)?;
             let domain = surface2.base_surface().natural_uv_domain_with_nurb(k)?;
-            let size = solver.surface_extension_factor * domain.size();
+            // fork WR-609: and the trace's reach (0 without `fillet_trace_reaches_rails`)
+            let size = solver.domain_extension(k, Some(surface2.base_surface()), &domain)?;
             let extended = Extent2d::from_points(
                 Point2::new(domain.min().x - size.x, domain.min().y - size.y),
                 Point2::new(domain.max().x + size.x, domain.max().y + size.y),

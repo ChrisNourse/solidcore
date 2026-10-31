@@ -1,6 +1,7 @@
 //! Safe wrapper for unit `surface.surface_assert_valid`: the pinned virtual
 //! `SmSurface::AssertValid` on a real B-spline surface, plane, cylinder, cone, sphere,
-//! torus, surface of revolution or surface of extrusion built from plain data (block
+//! torus, surface of revolution, surface of extrusion or curve-bounded surface built
+//! from plain data (block
 //! layout in `harness/cpp/shim/surface_surface_assert_valid.cpp`).
 
 use crate::{call_with_buffer, FfiError};
@@ -148,21 +149,6 @@ fn mults(k: &[f64]) -> Vec<i64> {
     m
 }
 
-/// An interior knot of multiplicity above the degree makes `N_SrfExtractIsoCrv` fail
-/// there; `SmBSplineSurface::CreateIsoParametricCurve` ignores that and returns the
-/// calloc'd, all-zero (zero-weight) curve, which `CalculateContinuities` (test 4) then
-/// evaluates. The port's `create_iso_parametric_curve` returns the error instead
-/// (`plan/findings/surface.surface_assert_valid--iso-curve-at-overfull-knot.md`), so
-/// such surfaces are not compared.
-fn iso_extraction(k: &[f64], degree: usize) -> Result<(), FfiError> {
-    let m = mults(k);
-    let interior = m.get(1..m.len().saturating_sub(1)).unwrap_or(&[]);
-    if interior.iter().any(|&x| x > degree as i64) {
-        return Err(bad("interior knot multiplicity above the degree"));
-    }
-    Ok(())
-}
-
 /// `SmBSplineSurface::HasInternalPole` indexes the control net from the knot
 /// multiplicities; interior knots of high multiplicity (or unclamped ends) send it
 /// outside the net (undefined behaviour). Rejects every block whose index arithmetic
@@ -205,13 +191,32 @@ fn internal_pole_indices(
 
 fn check(block: &[f64]) -> Result<(), FfiError> {
     let mut rd = Rd { v: block, at: 0 };
-    let kind = rd.int(0.0, 7.0)?;
+    let kind = rd.int(0.0, 8.0)?;
     let level = rd.int(0.0, 4.0)?;
     if level == 3 {
         return Err(bad("level"));
     }
     let make = rd.flag()?;
-    if kind == 0 {
+    if kind == 8 {
+        rd.flag()?; // report list supplied
+        rd.int(1.0, 8.0)?; // nesting is bounded in both builders
+        rd.vec()?;
+        let x = rd.vec()?;
+        let y = rd.vec()?;
+        axes(x, y)?;
+        rd.num()?;
+        rd.num()?;
+        rd.dom()?;
+        let n3d = rd.int(0.0, 8.0)?;
+        let nuv = rd.int(0.0, 8.0)?;
+        rd.flag()?;
+        for _ in 0..n3d + nuv {
+            rd.int(2.0, 3.0)?;
+            rd.flag()?;
+            rd.vec()?;
+            rd.vec()?;
+        }
+    } else if kind == 0 {
         let p = rd.int(1.0, 5.0)?;
         let q = rd.int(1.0, 5.0)?;
         let nu = rd.int(2.0, 32.0)?;
@@ -225,8 +230,6 @@ fn check(block: &[f64]) -> Result<(), FfiError> {
         knots(&ku)?;
         knots(&kv)?;
         internal_pole_indices(&ku, &kv, p, q, nu, nv)?;
-        iso_extraction(&ku, p)?;
-        iso_extraction(&kv, q)?;
         points(&mut rd, nu * nv, rational)?;
     } else if kind == 7 {
         rd.vec()?;
@@ -289,7 +292,9 @@ fn check(block: &[f64]) -> Result<(), FfiError> {
                 let d = rd.dom()?;
                 let r = rd.num()?;
                 angular(d[0], d[2])?;
-                if d[1] >= d[3] || d[1] < -90.0 || d[3] > 90.0 || r <= 1e-6 {
+                // (a V interval past a pole is defined: sphere tests 4 and 5 report it)
+                angular(d[1], d[3])?;
+                if r <= 1e-6 {
                     return Err(bad("sphere domain or radius"));
                 }
                 rd.flag()?;

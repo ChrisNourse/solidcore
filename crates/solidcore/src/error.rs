@@ -16,6 +16,8 @@
 //! | [`SolidError::Unported`], [`SolidError::unported`], [`SolidError::is_unported`] | (none: call into a unit not ported yet) |
 //! | [`SolidError::invalid_input`] | (none: out-of-range reads / null dereferences upstream) |
 //! | `ignored`, `ignore_status` (crate) | a call whose `SmStatus` upstream ignores    |
+//! | `checked_or_ignored` (crate) | per-call opt-in status policy (#483); legacy helpers unchanged |
+//! | `native_failure` (crate)  | a call whose failing `SmStatus` upstream handles (internal errors propagate) |
 //! | [`NlibCode`]                | `NL_*_ERR` numbers (`source/SMLib/inc/NL_DataStruct.h`) |
 //! | `?` operator                | `SER(...)` / `NER(...)` (return on error)        |
 //!
@@ -45,10 +47,40 @@ pub(crate) fn ignored<T>(r: Result<T>) -> Result<Option<T>> {
     }
 }
 
+/// The value of a call whose failing status upstream handles as an ordinary failure
+/// (e.g. a missed ray it retries): `Some` on success, `None` on an error that may stand
+/// for an upstream status. Errors with no upstream status propagate, so a port defect
+/// cannot pass for that failure: [`SolidError::Unported`],
+/// [`SolidError::PreparationRequired`], [`SolidError::PortInvariant`] (an owner, handle
+/// or identity the port could not resolve) and [`SolidError::NotFound`] (a stale typed
+/// id, where upstream follows a pointer).
+pub(crate) fn native_failure<T>(r: Result<T>) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(
+            e @ (SolidError::Unported { .. }
+            | SolidError::PreparationRequired { .. }
+            | SolidError::PortInvariant { .. }
+            | SolidError::NotFound { .. }),
+        ) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
 /// The status of a call upstream ignores: `Ok` for any result but
 /// [`SolidError::Unported`] or [`SolidError::PreparationRequired`].
 pub(crate) fn ignore_status<T>(r: Result<T>) -> Result<()> {
     ignored(r).map(|_| ())
+}
+
+/// Select the status policy of one audited call. Checked mode returns the original
+/// error before its output is read; legacy mode preserves `ignored` unchanged.
+pub(crate) fn checked_or_ignored<T>(r: Result<T>, checked: bool) -> Result<Option<T>> {
+    if checked {
+        r.map(Some)
+    } else {
+        ignored(r)
+    }
 }
 
 /// A reference to one topological entity, used as error context.
@@ -435,6 +467,36 @@ impl SolidError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_failures_keep_upstream_statuses_and_propagate_port_errors() {
+        assert_eq!(native_failure(Ok(3)), Ok(Some(3)));
+        let native = [
+            SolidError::sm_err("ray"),
+            SolidError::invalid_input("ray", "native"),
+            SolidError::Degenerate {
+                operation: "ray",
+                entity: None,
+            },
+            SolidError::nlib("ray", NlibCode::Numerical),
+        ];
+        for e in native {
+            assert_eq!(native_failure::<()>(Err(e)), Ok(None));
+        }
+        let internal = [
+            SolidError::unported("SmBrep::RayFire", "topology.brep_p2"),
+            SolidError::PreparationRequired { operation: "ray" },
+            SolidError::port_invariant("topology::brep_cache", "owner not in source B-rep"),
+            SolidError::NotFound {
+                operation: "ray",
+                entity: EntityRef::Face(FaceId::from_index(4)),
+            },
+        ];
+        for e in internal {
+            // `ignored` hid the last two as an ordinary failed call.
+            assert_eq!(native_failure::<()>(Err(e.clone())), Err(e));
+        }
+    }
 
     #[test]
     fn preparation_requests_are_never_ignored_or_reported_as_unported() {

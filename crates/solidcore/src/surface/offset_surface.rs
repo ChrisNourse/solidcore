@@ -13,6 +13,8 @@
 //! | [`OffsetSurface::create_extended_surface`], [`OffsetSurface::create_extended_surface_dir`] | `CreateExtendedSurface` (both) |
 //! | [`OffsetSurface::calculate_bounding_box`]             | `CalculateBoundingBox`                           |
 //! | `extend_surface` (private)                            | `sm_ExtendSurface` (static)                      |
+//! | `extend_as_itself` (private)                          | the fork's `sm_ExtendAsItself` (static; WR-633, WR-650) |
+//! | `rot_turn`, `arc_spans`, `turn_about`, `radial` (private) | the fork's `sm_GetRotTurn`, `sm_ArcSpans`, `sm_TurnAbout`, `sm_Radial` (WR-650) |
 //! | [`OffsetSurface::knots`]                              | `GetKnots`                                       |
 //! | [`OffsetSurface::evaluate_normal`], [`OffsetSurface::evaluate_normal_extending`] | `EvaluateNormal` |
 //! | [`OffsetSurface::evaluate_point`], [`OffsetSurface::evaluate_point_extending`] | `EvaluatePoint`    |
@@ -47,7 +49,8 @@
 //!   keeps it in step) and [`Surface::face`] of the base returns it. A non-owned base
 //!   keeps its caller's owner, as upstream's shared base does. The `SetBaseSurface` setter, the
 //!   unused copy constructor, `CreateMirrorSurface`, `GetMemoryUsed`, `WriteToDB`,
-//!   `Draw`, `DrawUV`, `Dump` and `AssertValid` are not ported (unused upstream).
+//!   `Draw`, `DrawUV` and `Dump` are not ported (unused upstream); `AssertValid` is
+//!   ported with the other surface checks (`surface::surface::assert_valid`).
 //! - **Context.** Every surface has a context here, so the clamp-instead-of-extend
 //!   branch for `GetContext() == NULL` is never taken; `SetContext` has nothing to set.
 //!   The constructor and every member that constructs an offset ([`OffsetSurface::copy`],
@@ -100,6 +103,7 @@
 //!   too: `SmOffsetSurface::GetSingularities()` (no arguments, returning the stored
 //!   flags) hides the virtual rather than overriding it.
 
+use core::f64::consts::PI;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -120,11 +124,15 @@ use crate::geom::vector2d::{Point2, Vec2};
 use crate::geom::vector3d::{Point3, Vec3};
 use crate::kernel::Kernel;
 use crate::math::{min3, EFF_ZERO, EFF_ZERO_SQ};
-use crate::nurbs::b_spline_surface::{BSplineSurface, LocationType, SurfParamType};
+use crate::nurbs::b_spline_curve::KnotType;
+use crate::nurbs::b_spline_surface::{
+    BSplineSurface, BSplineSurfaceForm, CanonicalSurfaceData, LocationType, SurfParamType,
+};
 use crate::nurbs::b_spline_surface_n_lib::p2::EvaluateFlags;
 use crate::nurbs::knots::Side;
 use crate::nurbs::srf_adv::p1::{eval_pt_derivs_unbounded, UnboundedExtension};
 use crate::nurbs::srf_adv::p3::ExtendContinuity;
+use crate::surface::surf_of_revolution::SurfOfRevolution;
 use crate::surface::surface::p1::SurfaceBoxes;
 use crate::surface::surface::p2::{
     check_geometry_nesting, is_kind_of as surface_is_kind_of, NestedGeometry, SurfaceEvaluate,
@@ -2178,22 +2186,605 @@ fn extend_toward(k: &Kernel, surface: &Surface, uv: Point2) -> Result<Surface> {
     Ok(Surface::from(BSplineSurface::from_gw_nurb(&ext.surface)))
 }
 
+/// `a > b` (false for a `NaN` operand), as the fork's `!(a > b)` tests read it.
+fn gt(a: f64, b: f64) -> bool {
+    a.partial_cmp(&b) == Some(core::cmp::Ordering::Greater)
+}
+
+/// `a <= b` (false for a `NaN` operand).
+fn le(a: f64, b: f64) -> bool {
+    matches!(
+        a.partial_cmp(&b),
+        Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+    )
+}
+
+/// A control point and its weight (the fork's `sm_CPt`).
+#[derive(Debug, Clone, Copy)]
+struct WeightedPoint {
+    p: Point3,
+    w: f64,
+}
+
+/// `x` turned by `t` (radians) about the line through `o` along unit `a` (the fork's
+/// `sm_TurnAbout`).
+fn turn_about(x: Point3, o: Point3, a: Vec3, t: f64) -> Point3 {
+    let v = x - o;
+    o + v * t.cos() + a.cross(v) * t.sin() + a * (a.dot(v) * (1.0 - t.cos()))
+}
+
+/// The control points of `n` spans of `angle` (a quarter turn at most) carrying on, about
+/// the line through `o` along unit `a`, the circle that ends at `e`: middle, end, middle,
+/// end, ... (the fork's `sm_ArcSpans`; the rational quadratic arc, its middle point where
+/// the end tangents meet at weight `cos(angle / 2)` times the end's).
+fn arc_spans(e: WeightedPoint, o: Point3, a: Vec3, n: usize, angle: f64) -> Vec<WeightedPoint> {
+    let c = (0.5 * angle).cos();
+    let foot = o + a * a.dot(e.p - o);
+    let mut out = Vec::new();
+    for k in 1..=n {
+        let mid = turn_about(e.p, o, a, (k as f64 - 0.5) * angle);
+        out.push(WeightedPoint {
+            p: foot + (mid - foot) * (1.0 / c),
+            w: e.w * c,
+        });
+        out.push(WeightedPoint {
+            p: turn_about(e.p, o, a, k as f64 * angle),
+            w: e.w,
+        });
+    }
+    out
+}
+
+/// The radial part of `x` about the line through `o` along unit `z` (the fork's
+/// `sm_Radial`).
+fn radial(x: Point3, o: Point3, z: Vec3) -> Vec3 {
+    let v = x - o;
+    v - z * z.dot(v)
+}
+
+/// How a cylinder's, cone's, sphere's or torus's NURB is carried on round its axis (the
+/// fork's `sm_RotTurn`, tangency-labs/smlib@b298cc2).
+#[derive(Debug, Clone, Copy, Default)]
+struct RotTurn {
+    /// The NURB direction round the axis: 0 = u, 1 = v.
+    rot: usize,
+    /// Each extension span's angle, radians: a quarter turn at most.
+    angle: f64,
+    /// Each extension span's parameter length (the base domain's per radian).
+    span: f64,
+    /// The spans on either side that close the turn.
+    close: usize,
+    /// The closed turn's parameters: `close` spans past either end of the base.
+    lo: f64,
+    /// See [`RotTurn::lo`].
+    hi: f64,
+}
+
+/// The surface of revolution of a cylinder, cone, sphere or torus (its NURB made), whether
+/// its generator is a circle (a sphere's or torus's), and a torus's major radius.
+fn revolution_of<'a>(
+    k: &Kernel,
+    surface: &'a Surface,
+) -> Result<(&'a SurfOfRevolution, bool, Option<f64>)> {
+    match surface.kind_with_nurb(k)? {
+        SurfaceKind::Cone(c) => Ok((c.rev(), false, None)),
+        SurfaceKind::Sphere(s) => Ok((s.base(), true, None)),
+        SurfaceKind::Torus(t) => Ok((t.base(), true, Some(t.major_radius()))),
+        _ => Err(SolidError::sm_err(OP_EXTEND)),
+    }
+}
+
+/// The fork's `sm_GetRotTurn` (tangency-labs/smlib@b298cc2): the gap that closes the turn
+/// split in two, one half past either end, each half into equal spans of a quarter turn
+/// at most, each span the base domain's parameter length per radian.
+///
+/// # Errors
+///
+/// `SM_ERR` for an arc outside `(0, 360]` degrees or a rotation interval of no length.
+fn rot_turn(rev: &SurfOfRevolution) -> Result<RotTurn> {
+    // GetRotateParamExtent
+    let domain = rev.base().natural_uv_domain();
+    let (ivl, rot) = if rev.swap_uv() {
+        (domain.v_interval(), 1)
+    } else {
+        (domain.u_interval(), 0)
+    };
+    let arc = (rev.end_angle_deg() - rev.start_angle_deg()) * (PI / 180.0);
+    let length = ivl.max() - ivl.min();
+    if !gt(arc, 0.0) || !le(arc, 2.0 * PI) || !gt(length, 0.0) {
+        return Err(SolidError::sm_err(OP_EXTEND));
+    }
+    let half_gap = PI - 0.5 * arc;
+    let close = (half_gap / (0.5 * PI)).ceil() as usize;
+    let angle = if close > 0 {
+        half_gap / close as f64
+    } else {
+        0.5 * PI
+    };
+    let span = length / arc * angle;
+    Ok(RotTurn {
+        rot,
+        angle,
+        span,
+        close,
+        lo: ivl.min() + -(close as f64 * span),
+        hi: ivl.max() + (close as f64 * span),
+    })
+}
+
+/// One NURB direction of [`extend_as_itself`]: its degree, distinct knots and their
+/// multiplicities.
+struct AsItselfDir {
+    deg: usize,
+    knots: Vec<f64>,
+    mults: Vec<usize>,
+}
+
+impl AsItselfDir {
+    /// The first knot (`NaN` for none; [`extend_as_itself`] checks there are two).
+    fn front(&self) -> f64 {
+        self.knots.first().copied().unwrap_or(f64::NAN)
+    }
+
+    /// The last knot (`NaN` for none).
+    fn back(&self) -> f64 {
+        self.knots.last().copied().unwrap_or(f64::NAN)
+    }
+
+    /// The knot `i` (`NaN` past the end).
+    fn at(&self, i: usize) -> f64 {
+        self.knots.get(i).copied().unwrap_or(f64::NAN)
+    }
+
+    /// The knots appended at one end, outward: the end becomes a knot of the degree's
+    /// multiplicity, each new span ends at one, the last at one more (the fork's `Join`).
+    fn join(&mut self, high: bool, new: &[f64]) {
+        if new.is_empty() {
+            return;
+        }
+        let deg = self.deg;
+        if high {
+            if let Some(m) = self.mults.last_mut() {
+                *m = deg;
+            }
+            for &t in new {
+                self.knots.push(t);
+                self.mults.push(deg);
+            }
+            if let Some(m) = self.mults.last_mut() {
+                *m = deg + 1;
+            }
+        } else {
+            if let Some(m) = self.mults.first_mut() {
+                *m = deg;
+            }
+            for &t in new {
+                self.knots.insert(0, t);
+                self.mults.insert(0, deg);
+            }
+            if let Some(m) = self.mults.first_mut() {
+                *m = deg + 1;
+            }
+        }
+    }
+}
+
+/// The most spans [`extend_as_itself`] adds at one end of a direction (the fork's bound).
+const AS_ITSELF_MAX_SPANS: usize = 4096;
+
+/// The spans of parameter length `span` from parameter `from` to past `goal` (outward,
+/// `sign`), their knots appended to `knots`: at least one where the goal lies past `from`
+/// (the fork's `Spans`).
+fn as_itself_spans(span: f64, from: f64, goal: f64, sign: f64, knots: &mut Vec<f64>) -> Result<()> {
+    if !gt(span, 0.0) {
+        return Err(SolidError::sm_err(OP_EXTEND));
+    }
+    // (ULONG)ceil(...): saturating, so a reach past the bound fails below
+    let n = ((goal - from) * sign / span).ceil() as usize;
+    if n > AS_ITSELF_MAX_SPANS {
+        return Err(SolidError::sm_err(OP_EXTEND));
+    }
+    for k in 1..=n {
+        knots.push(from + sign * (k as f64 * span));
+    }
+    Ok(())
+}
+
+/// The point `i` of row `r` of the net `g` (`SM_ERR` past its end; never reached).
+fn net_at(g: &[Vec<WeightedPoint>], r: usize, i: usize) -> Result<WeightedPoint> {
+    g.get(r)
+        .and_then(|row| row.get(i))
+        .copied()
+        .ok_or_else(|| SolidError::sm_err(OP_EXTEND))
+}
+
+/// The fork's `sm_ExtendAsItself` (`fixes.offset_extension_as_itself`, WR-633 and WR-650;
+/// tangency-labs/smlib@de0a6b8 as rebuilt by @93db777 and @b298cc2): the NURB of a
+/// cylinder, cone, sphere or torus extended as itself so that its domain reaches `lo` and
+/// `hi`, built directly from the surface it is tagged as. Its spans are kept, and new
+/// spans are joined at its ends by a knot of full multiplicity, so over its own domain it
+/// is the same surface at the same parameters.
+///
+/// Round the axis every row of control points is a circle about it, carried on by rational
+/// quadratic arc spans ([`arc_spans`]) of [`RotTurn::angle`] and [`RotTurn::span`]; with
+/// `close_turn` it reaches exactly the turn's closure ([`RotTurn::lo`], [`RotTurn::hi`]),
+/// `lo` and `hi` aside. A torus's or sphere's generator is a circle too (about the tube's
+/// centre, the sphere's centre), carried on in quarter turns in the rotation's first
+/// column and taken to every other column by that column's turn and scale about the axis;
+/// a cone's or cylinder's generator (degree 1) carries its last span's homogeneous control
+/// points on, the same line.
+///
+/// # Errors
+///
+/// `SM_ERR` for a surface that is not a cylinder, cone, sphere or torus, a net or knot
+/// vector of an unexpected shape or degree, a degenerate axis or circle, a non-positive
+/// weight, or more than [`AS_ITSELF_MAX_SPANS`] spans at one end; those of the NURB
+/// queries and of [`BSplineSurface::create_canonical`].
+fn extend_as_itself(
+    k: &Kernel,
+    surface: &Surface,
+    lo: Point2,
+    hi: Point2,
+    close_turn: bool,
+) -> Result<Surface> {
+    let err = || SolidError::sm_err(OP_EXTEND);
+    let (rev, gen_circle, major_radius) = revolution_of(k, surface)?;
+    let turn = rot_turn(rev)?;
+    let l_rot = turn.rot;
+    let b = rev.base();
+
+    // The net as g[r][i]: r along the rotation, i along the generator.
+    let net = b.control_point_net()?;
+    let (num_u, num_v) = (net.u_count, net.v_count);
+    if num_u < 2
+        || num_v < 2
+        || net.points.len() != num_u * num_v
+        || (!net.weights.is_empty() && net.weights.len() != net.points.len())
+    {
+        return Err(err());
+    }
+    let (num_rot, num_gen) = if l_rot == 0 {
+        (num_u, num_v)
+    } else {
+        (num_v, num_u)
+    };
+    let mut g: Vec<Vec<WeightedPoint>> = Vec::new();
+    for r in 0..num_rot {
+        let mut row = Vec::new();
+        for i in 0..num_gen {
+            let at = if l_rot == 0 {
+                r * num_v + i
+            } else {
+                i * num_v + r
+            };
+            let p = net.points.get(at).copied().ok_or_else(err)?;
+            let w = if net.weights.is_empty() {
+                1.0
+            } else {
+                net.weights.get(at).copied().ok_or_else(err)?
+            };
+            row.push(WeightedPoint { p, w });
+        }
+        g.push(row);
+    }
+    let (knots_u, mults_u) = b.knots(SurfParamType::U, None)?;
+    let (knots_v, mults_v) = b.knots(SurfParamType::V, None)?;
+    let mut dir_u = AsItselfDir {
+        deg: b.degree(SurfParamType::U),
+        knots: knots_u,
+        mults: mults_u,
+    };
+    let mut dir_v = AsItselfDir {
+        deg: b.degree(SurfParamType::V),
+        knots: knots_v,
+        mults: mults_v,
+    };
+    for d in [&dir_u, &dir_v] {
+        if d.knots.len() < 2
+            || d.mults.first() != Some(&(d.deg + 1))
+            || d.mults.last() != Some(&(d.deg + 1))
+        {
+            return Err(err());
+        }
+    }
+    let (rot, gen) = if l_rot == 0 {
+        (&mut dir_u, &mut dir_v)
+    } else {
+        (&mut dir_v, &mut dir_u)
+    };
+    // Circles are rational quadratics; a cone's generator is a line.
+    if rot.deg != 2 || gen.deg != if gen_circle { 2 } else { 1 } {
+        return Err(err());
+    }
+
+    let o = rev.position().origin();
+    let z = rev.position().z_axis().unitize().map_err(|_| err())?;
+    let deg_to_rad = PI / 180.0;
+    let gen_angle = rev.step_uv_domain().size().y * deg_to_rad;
+    let (rot_lo, rot_hi, gen_lo, gen_hi) = if l_rot == 0 {
+        (lo.x, hi.x, lo.y, hi.y)
+    } else {
+        (lo.y, hi.y, lo.x, hi.x)
+    };
+    // the base domain's
+    let gen_length = gen.back() - gen.front();
+
+    // The generator first, in the rotation's first column, then carried to every column.
+    for high in [false, true] {
+        let from = if high { gen.back() } else { gen.front() };
+        let goal = if high { gen_hi } else { gen_lo };
+        let sign = if high { 1.0 } else { -1.0 };
+        if !gt((goal - from) * sign, 0.0) {
+            continue;
+        }
+        let lg = g.first().map_or(0, Vec::len);
+        let (i_end, i_in) = if high {
+            (lg.saturating_sub(1), lg.saturating_sub(2))
+        } else {
+            (0, 1)
+        };
+        let mut new_knots = Vec::new();
+        let mut new: Vec<Vec<WeightedPoint>> = Vec::new(); // per column, outward
+        if gen_circle {
+            if !gt(gen_angle, 0.0) {
+                return Err(err());
+            }
+            as_itself_spans(
+                gen_length / gen_angle * (0.5 * PI),
+                from,
+                goal,
+                sign,
+                &mut new_knots,
+            )?;
+            // The generator's circle: about the sphere's centre, or the torus's tube
+            // centre in the first column's meridian plane.
+            let end = net_at(&g, 0, i_end)?;
+            let mut centre = o;
+            let out = radial(end.p, o, z);
+            if let Some(major) = major_radius {
+                let out = out.unitize().map_err(|_| err())?;
+                centre = o + out * major;
+            }
+            // turning outward: from the inner control point through the end
+            let inner = net_at(&g, 0, i_in)?;
+            let axis = (end.p - centre)
+                .cross(end.p - inner.p)
+                .unitize()
+                .map_err(|_| err())?;
+            let first = arc_spans(end, centre, axis, new_knots.len(), 0.5 * PI);
+            // Every other column is the first turned about the axis and scaled from it:
+            // read off the generator point farthest from the axis.
+            let (mut i_ref, mut d_ref) = (0, -1.0);
+            for i in 0..lg {
+                let r = radial(net_at(&g, 0, i)?.p, o, z).length();
+                if r > d_ref {
+                    d_ref = r;
+                    i_ref = i;
+                }
+            }
+            let ref0 = net_at(&g, 0, i_ref)?;
+            if !gt(d_ref, 0.0) || !gt(ref0.w, 0.0) {
+                return Err(err());
+            }
+            let rho0 = radial(ref0.p, o, z);
+            new.push(first);
+            for r in 1..g.len() {
+                let at = net_at(&g, r, i_ref)?;
+                let rho = radial(at.p, o, z);
+                let scale = rho.length() / d_ref;
+                let angle = rho0.cross(rho).dot(z).atan2(rho0.dot(rho));
+                let dw = at.w / ref0.w;
+                let column = new
+                    .first()
+                    .ok_or_else(err)?
+                    .iter()
+                    .map(|c| {
+                        let sr = radial(c.p, o, z);
+                        let along = c.p - sr;
+                        WeightedPoint {
+                            p: turn_about(along + sr * scale, along, z, angle),
+                            w: c.w * dw,
+                        }
+                    })
+                    .collect();
+                new.push(column);
+            }
+        } else {
+            // a line: the last span's homogeneous control points carried on to the goal
+            let last = if high {
+                gen.back() - gen.at(gen.knots.len().saturating_sub(2))
+            } else {
+                gen.at(1) - gen.front()
+            };
+            if !gt(last, 0.0) {
+                return Err(err());
+            }
+            let f = (goal - from) * sign / last;
+            new_knots.push(goal);
+            for r in 0..g.len() {
+                let (a, b) = (net_at(&g, r, i_end)?, net_at(&g, r, i_in)?);
+                let w = a.w + (a.w - b.w) * f;
+                if !gt(w, 0.0) {
+                    return Err(err());
+                }
+                new.push(vec![WeightedPoint {
+                    p: (a.p * a.w + (a.p * a.w - b.p * b.w) * f) * (1.0 / w),
+                    w,
+                }]);
+            }
+        }
+        for (row, add) in g.iter_mut().zip(new) {
+            if high {
+                row.extend(add);
+            } else {
+                row.splice(0..0, add.into_iter().rev());
+            }
+        }
+        gen.join(high, &new_knots);
+    }
+
+    // Round the axis: every row a circle about it.
+    for high in [false, true] {
+        let from = if high { rot.back() } else { rot.front() };
+        let goal = if high { rot_hi } else { rot_lo };
+        let sign = if high { 1.0 } else { -1.0 };
+        if !gt((goal - from) * sign, 0.0) {
+            continue;
+        }
+        let mut new_knots = Vec::new();
+        if close_turn {
+            // the turn's closure, exactly `rot_turn`'s `lo` and `hi`
+            for k in 1..=turn.close {
+                new_knots.push(from + sign * (k as f64 * turn.span));
+            }
+        } else {
+            as_itself_spans(turn.span, from, goal, sign, &mut new_knots)?;
+        }
+        if new_knots.is_empty() {
+            continue;
+        }
+        let lr = g.len();
+        let (r_end, r_in) = if high {
+            (lr.saturating_sub(1), lr.saturating_sub(2))
+        } else {
+            (0, 1)
+        };
+        let end_row = g.get(r_end).cloned().ok_or_else(err)?;
+        // turning outward, read off the row farthest from the axis
+        let (mut i_ref, mut d_ref) = (0, -1.0);
+        for (i, c) in end_row.iter().enumerate() {
+            let r = radial(c.p, o, z).length();
+            if r > d_ref {
+                d_ref = r;
+                i_ref = i;
+            }
+        }
+        let at_end = net_at(&g, r_end, i_ref)?.p;
+        let at_in = net_at(&g, r_in, i_ref)?.p;
+        let sense = (at_end - o).cross(at_end - at_in).dot(z);
+        if !gt(d_ref, 0.0) || sense == 0.0 {
+            return Err(err());
+        }
+        let axis = if sense > 0.0 { z } else { -z };
+        let mut new: Vec<Vec<WeightedPoint>> = vec![Vec::new(); 2 * new_knots.len()];
+        for c in &end_row {
+            let spans = arc_spans(*c, o, axis, new_knots.len(), turn.angle);
+            for (row, p) in new.iter_mut().zip(spans) {
+                row.push(p);
+            }
+        }
+        if high {
+            g.extend(new);
+        } else {
+            g.splice(0..0, new.into_iter().rev());
+        }
+        rot.join(high, &new_knots);
+    }
+
+    // The extended net, i along u and j along v.
+    let (new_u, new_v) = if l_rot == 0 {
+        (g.len(), g.first().map_or(0, Vec::len))
+    } else {
+        (g.first().map_or(0, Vec::len), g.len())
+    };
+    let mut points = Vec::new();
+    let mut weights = Vec::new();
+    for i in 0..new_u {
+        for j in 0..new_v {
+            let c = if l_rot == 0 {
+                net_at(&g, i, j)?
+            } else {
+                net_at(&g, j, i)?
+            };
+            points.push(c.p);
+            weights.push(c.w);
+        }
+    }
+    let extended = BSplineSurface::create_canonical(&CanonicalSurfaceData {
+        u_degree: dir_u.deg,
+        v_degree: dir_v.deg,
+        control_points: &points,
+        form: BSplineSurfaceForm::Unspecified,
+        u_multiplicities: &dir_u.mults,
+        v_multiplicities: &dir_v.mults,
+        u_knots: &dir_u.knots,
+        v_knots: &dir_v.knots,
+        knot_type: KnotType::Unspecified,
+        weights: Some(&weights),
+        uv_domain: None,
+    })?;
+    Ok(Surface::from(extended))
+}
+
 /// The extension of `fixes.offset_extension_from_base` (WR-458, #419; the fork's
 /// tangency-labs/smlib@2d7c7ed): `base` is extended on every side that can grow at once,
 /// each by the base domain's size times the least power of two that reaches `uv`, and
 /// never less than the `current` extension's domain, so one point always gives one
 /// extension whatever was evaluated first. `Ok(None)` when `have` already contains `uv`.
+///
+/// With `fixes.offset_extension_as_itself` (WR-650; the fork's tangency-labs/smlib@b298cc2)
+/// a cylinder's, cone's, sphere's or torus's extension reaches round its axis no further
+/// than closing the turn ([`RotTurn`]); once the extension reaches it, that direction is
+/// periodic and `uv` is wrapped to the closed turn, as a periodic surface's.
 fn extend_from_base(
     k: &Kernel,
     base: &Surface,
-    uv: Point2,
+    uv_out: &mut Point2,
     current: Option<Extent2d>,
     periodic: [bool; 2],
     singularities: u32,
 ) -> Result<Option<Surface>> {
     let domain = base.natural_uv_domain_with_nurb(k)?;
     let size = domain.size();
+
+    // Opt-in (`fixes.offset_extension_as_itself`, WR-633; the fork's
+    // tangency-labs/smlib@de0a6b8): a cylinder, cone, sphere or torus continues as itself
+    // (`sm_ExtendAsItself`): its NURB spans are rational arcs and straight lines, whose
+    // polynomials carried on stay on the surface. A tangent extension (G1R) leaves it at once.
+    let as_itself = k.fixes.offset_extension_as_itself
+        && matches!(
+            base.kind(),
+            SurfaceKind::Cone(_) | SurfaceKind::Sphere(_) | SurfaceKind::Torus(_)
+        );
+    // WR-650 (the fork's tangency-labs/smlib@b298cc2): round the axis such a surface is a
+    // circle, and its extension reaches no further than closing the turn (half the gap past
+    // either end, `sm_RotTurn`); from there on that direction is periodic, its parameters
+    // wrapped to the closed turn like a periodic surface's. Carried on past it, a 294 deg
+    // arc grown a domain either way covered its turn two and a half times over.
+    let mut turn = RotTurn::default();
+    let mut can_close = false;
+    if as_itself {
+        turn = rot_turn(revolution_of(k, base)?.0)?;
+        let periodic_rot = if turn.rot == 0 {
+            periodic[0]
+        } else {
+            periodic[1]
+        };
+        let singular = if turn.rot == 0 {
+            SS_UMIN | SS_UMAX
+        } else {
+            SS_VMIN | SS_VMAX
+        };
+        can_close = !periodic_rot && (singularities & singular) == 0;
+    }
+    let turn_ivl = Extent1d::from_min_max(turn.lo, turn.hi);
+    let rot_of = |p: &Point2| if turn.rot == 0 { p.x } else { p.y };
+    let set_rot = |p: &mut Point2, v: f64| {
+        if turn.rot == 0 {
+            p.x = v;
+        } else {
+            p.y = v;
+        }
+    };
+    // an extension from `lo` to `hi` round the axis that would reach round the turn
+    let closes = |lo: f64, hi: f64| can_close && hi - lo >= turn.hi - turn.lo;
+
+    // if PeriodicWrap or Singularity clamping inserted point into domain - all done
     let have = current.unwrap_or(domain);
+    if closes(rot_of(&have.min()), rot_of(&have.max())) {
+        set_rot(uv_out, turn_ivl.periodic_wrap(rot_of(uv_out)));
+    }
+    let uv = *uv_out;
     if domain.contains_point(uv, 0.0) || have.contains_point(uv, 0.0) {
         return Ok(None);
     }
@@ -2218,6 +2809,16 @@ fn extend_from_base(
     }
     if !periodic[1] && (singularities & SS_VMAX) == 0 {
         hi.y = hi.y.max(reach(dmax.y, size.y, uv.y, 1.0));
+    }
+    if as_itself {
+        // reaching round the turn: to its closure, and the point wrapped to it
+        let close = closes(rot_of(&lo), rot_of(&hi));
+        if close {
+            set_rot(&mut lo, turn.lo);
+            set_rot(&mut hi, turn.hi);
+            set_rot(uv_out, turn_ivl.periodic_wrap(rot_of(&uv)));
+        }
+        return Ok(Some(extend_as_itself(k, base, lo, hi, close)?));
     }
     // toward the low corner from the base, then the result toward the high corner (a side
     // that does not grow keeps its middle coordinate)
@@ -2311,7 +2912,7 @@ fn extend_surface(
     // `fixes.offset_extension_from_base`: `fixed` holds the current extension's domain
     if fixed {
         let periodic = [is_periodic_on_u, is_periodic_on_v];
-        return extend_from_base(k, surface, *uv, current, periodic, singularities);
+        return extend_from_base(k, surface, uv, current, periodic, singularities);
     }
 
     // extend a domain size farther out than needed
@@ -2901,5 +3502,280 @@ mod tests {
         assert!(upstream > 1e-6, "upstream copies agree: {upstream}");
         let fixed = offset_extension_gap(true);
         assert!(fixed < 1e-9, "fixed copies disagree by {fixed}");
+    }
+
+    /// The farthest an offset (4) of a half cylinder (r 5, its axis the z axis) evaluated
+    /// from 0.07 to 3 domains of turn past both ends of its arc lies from 9 off its axis
+    /// (WR-633, the fork's tangency-labs/smlib@de0a6b8).
+    fn as_itself_off_circle(as_itself: bool) -> f64 {
+        use crate::surface::cone::Cone;
+        let mut k = Kernel::default();
+        k.fixes.offset_extension_from_base = true;
+        k.fixes.offset_extension_as_itself = as_itself;
+        let mut half = Cone::new_cylinder_bounded(
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            5.0,
+            0.0,
+            180.0,
+            10.0,
+            false,
+            false,
+            false,
+        );
+        half.make_nurb(&k).unwrap();
+        let half = Surface::from(half);
+        let d = half.natural_uv_domain_with_nurb(&k).unwrap();
+        let len = d.max().x - d.min().x;
+        let v = 0.5 * (d.min().y + d.max().y);
+        let mut worst: f64 = 0.0;
+        for f in [0.07, 0.25, 0.5, 1.0, 2.0, 3.0] {
+            let mut o =
+                OffsetSurface::new(&k, 4.0, half.clone(), true, crate::geom::extent2d::SS_NONE)
+                    .unwrap();
+            o.set_allow_extension(true);
+            for u in [d.max().x + f * len, d.min().x - f * len] {
+                let p = o.evaluate_point_extending(&k, Point2::new(u, v)).unwrap();
+                let r = (p.x * p.x + p.y * p.y).sqrt();
+                worst = worst.max((r - 9.0).abs());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn wr633_offset_of_a_cylinder_continues_as_itself_past_its_domain() {
+        let upstream = as_itself_off_circle(false);
+        assert!(
+            upstream > 1e-3,
+            "the tangent extension stays on the circle: {upstream}"
+        );
+        let fixed = as_itself_off_circle(true);
+        assert!(
+            fixed < 1e-9,
+            "the continuation leaves the circle by {fixed}"
+        );
+    }
+
+    /// A partial cylinder (r 5, its axis the z axis, from 0 degrees to `end_deg`), its NURB
+    /// made, and an offset 4 of it that may extend, with both extension flags as given.
+    fn wr650_offset(as_itself: bool, end_deg: f64) -> (Kernel, Surface, OffsetSurface) {
+        use crate::surface::cone::Cone;
+        let mut k = Kernel::default();
+        k.fixes.offset_extension_from_base = true;
+        k.fixes.offset_extension_as_itself = as_itself;
+        let mut arc = Cone::new_cylinder_bounded(
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            5.0,
+            0.0,
+            end_deg,
+            10.0,
+            false,
+            false,
+            false,
+        );
+        arc.make_nurb(&k).unwrap();
+        let arc = Surface::from(arc);
+        let mut o =
+            OffsetSurface::new(&k, 4.0, arc.clone(), true, crate::geom::extent2d::SS_NONE).unwrap();
+        o.set_allow_extension(true);
+        (k, arc, o)
+    }
+
+    /// The angle of `p` about the z axis, in degrees.
+    fn wr650_deg(p: Point3) -> f64 {
+        p.y.atan2(p.x).to_degrees()
+    }
+
+    /// The half cylinder r 5 offset 4 of the fork's tangency-labs/smlib@93db777 (WR-650):
+    /// its extension keeps the base's spans and joins quarter-turn spans of half a domain
+    /// each, so half a domain past its end lies at 270 degrees and a domain past it at 360;
+    /// inside its arc the points are the same before and after it is extended.
+    fn wr650_half_cylinder(as_itself: bool) -> (f64, f64, f64) {
+        let (k, arc, mut o) = wr650_offset(as_itself, 180.0);
+        let d = arc.natural_uv_domain_with_nurb(&k).unwrap();
+        let len = d.max().x - d.min().x;
+        let v = 0.5 * (d.min().y + d.max().y);
+        let inside: Vec<Point2> = [0.0, 0.1, 0.37, 0.5, 0.81, 1.0]
+            .iter()
+            .map(|f| Point2::new(d.min().x + f * len, v))
+            .collect();
+        let before: Vec<Point3> = inside
+            .iter()
+            .map(|&uv| o.evaluate_point_extending(&k, uv).unwrap())
+            .collect();
+        let half = o
+            .evaluate_point_extending(&k, Point2::new(d.max().x + 0.5 * len, v))
+            .unwrap();
+        let whole = o
+            .evaluate_point_extending(&k, Point2::new(d.max().x + len, v))
+            .unwrap();
+        let mut moved: f64 = 0.0;
+        for (uv, b) in inside.iter().zip(&before) {
+            moved = moved.max((o.evaluate_point_extending(&k, *uv).unwrap() - *b).length());
+        }
+        // 270 deg is -90 from atan2; 360 deg is 0
+        (
+            (wr650_deg(half) + 90.0).abs(),
+            wr650_deg(whole).abs(),
+            moved,
+        )
+    }
+
+    #[test]
+    fn wr650_half_cylinder_extension_continues_in_quarter_turns() {
+        let (half, whole, moved) = wr650_half_cylinder(true);
+        assert!(
+            half < 1e-9,
+            "half a domain past the end is {half} deg off 270"
+        );
+        assert!(whole < 1e-9, "a domain past the end is {whole} deg off 360");
+        assert!(
+            moved < 1e-12,
+            "inside the arc the extension moved a point {moved}"
+        );
+        // without the flag: upstream's tangent extension
+        let (half, whole, _) = wr650_half_cylinder(false);
+        assert!(half > 1.0 && whole > 1.0, "{half} {whole}");
+    }
+
+    /// The 294 deg partial cylinder r 5 offset 4 of the fork's tangency-labs/smlib@b298cc2
+    /// (WR-650), evaluated from 4.5 to 900 degrees (of the base's parameter per degree)
+    /// past either end: the farthest off radius 9 and off the same point a turn back, the
+    /// extension's reach round the axis less the turn's, the farthest the closure (the
+    /// extension's ends) lies from -33 degrees, and the farthest a point inside the arc
+    /// moved once extended.
+    fn wr650_partial_cylinder(as_itself: bool) -> [f64; 5] {
+        let (k, arc, mut o) = wr650_offset(as_itself, 294.0);
+        let d = arc.natural_uv_domain_with_nurb(&k).unwrap();
+        let len = d.max().x - d.min().x;
+        let per_deg = len / 294.0;
+        let turn = 360.0 * per_deg;
+        let v = 0.5 * (d.min().y + d.max().y);
+        let inside: Vec<Point2> = [0.0, 0.2, 0.5, 0.77, 1.0]
+            .iter()
+            .map(|f| Point2::new(d.min().x + f * len, v))
+            .collect();
+        let before: Vec<Point3> = inside
+            .iter()
+            .map(|&uv| o.evaluate_point_extending(&k, uv).unwrap())
+            .collect();
+        let (mut off_radius, mut off_turn): (f64, f64) = (0.0, 0.0);
+        for deg in [4.5, 18.0, 45.0, 100.0, 300.0, 500.0, 900.0] {
+            for (u, back) in [
+                (d.max().x + deg * per_deg, -turn),
+                (d.min().x - deg * per_deg, turn),
+            ] {
+                let p = o.evaluate_point_extending(&k, Point2::new(u, v)).unwrap();
+                let q = o
+                    .evaluate_point_extending(&k, Point2::new(u + back, v))
+                    .unwrap();
+                off_radius = off_radius.max(((p.x * p.x + p.y * p.y).sqrt() - 9.0).abs());
+                off_turn = off_turn.max((p - q).length());
+            }
+        }
+        let e = o.extended_base_surface().unwrap();
+        let ed = e.natural_uv_domain_with_nurb(&k).unwrap();
+        let reach = ((ed.max().x - ed.min().x) - turn).abs();
+        let mut closure: f64 = 0.0;
+        for u in [ed.min().x, ed.max().x] {
+            let p = o.evaluate_point_extending(&k, Point2::new(u, v)).unwrap();
+            closure = closure.max((wr650_deg(p) + 33.0).abs());
+        }
+        let mut moved: f64 = 0.0;
+        for (uv, b) in inside.iter().zip(&before) {
+            moved = moved.max((o.evaluate_point_extending(&k, *uv).unwrap() - *b).length());
+        }
+        [off_radius, off_turn, reach / turn, closure, moved]
+    }
+
+    #[test]
+    fn wr650_partial_cylinder_extension_closes_its_turn() {
+        let [off_radius, off_turn, reach, closure, moved] = wr650_partial_cylinder(true);
+        assert!(off_radius < 1e-9, "{off_radius} off radius 9");
+        assert!(off_turn < 1e-9, "{off_turn} off the point a turn back");
+        assert!(
+            reach < 1e-12,
+            "the extension reaches {reach} turns past one turn"
+        );
+        assert!(closure < 1e-9, "the closure lies {closure} deg off -33");
+        assert!(
+            moved < 1e-12,
+            "inside the arc the extension moved a point {moved}"
+        );
+        // without the flag: upstream's tangent extension, a domain or more each way
+        let [off_radius, _, reach, _, _] = wr650_partial_cylinder(false);
+        assert!(off_radius > 1e-3 && reach > 1.0, "{off_radius} {reach}");
+    }
+
+    /// The farthest an offset `d` of `base` evaluated 0.3 and 0.6 domains past each side
+    /// (and past both sides at once) lies off the surface `off` measures, with both
+    /// extension flags on (WR-650: a sphere's or torus's generator continues as a circle).
+    fn wr650_off_surface(base: Surface, d: f64, off: impl Fn(Point3) -> f64) -> f64 {
+        let mut k = Kernel::default();
+        k.fixes.offset_extension_from_base = true;
+        k.fixes.offset_extension_as_itself = true;
+        let dom = base.natural_uv_domain_with_nurb(&k).unwrap();
+        let (lo, hi, size) = (dom.min(), dom.max(), dom.size());
+        let mut o = OffsetSurface::new(&k, d, base, true, crate::geom::extent2d::SS_NONE).unwrap();
+        o.set_allow_extension(true);
+        let mid = dom.mid();
+        let mut worst: f64 = 0.0;
+        for f in [0.3, 0.6] {
+            let (du, dv) = (f * size.x, f * size.y);
+            for uv in [
+                Point2::new(hi.x + du, mid.y),
+                Point2::new(lo.x - du, mid.y),
+                Point2::new(mid.x, hi.y + dv),
+                Point2::new(mid.x, lo.y - dv),
+                Point2::new(hi.x + du, hi.y + dv),
+                Point2::new(lo.x - du, lo.y - dv),
+            ] {
+                let p = o.evaluate_point_extending(&k, uv).unwrap();
+                worst = worst.max(off(p).abs());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn wr650_sphere_and_torus_generators_continue_as_circles() {
+        use crate::surface::sphere::{Sphere, SphereOptions};
+        use crate::surface::torus::{Torus, TorusOptions};
+        let k = Kernel::default();
+        let torus = Torus::new(
+            &k,
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Extent2d::from_bounds(0.0, -60.0, 200.0, 60.0),
+            10.0,
+            3.0,
+            TorusOptions::default(),
+        )
+        .unwrap();
+        let off = wr650_off_surface(Surface::from(torus), 1.0, |p| {
+            let r = (p.x * p.x + p.y * p.y).sqrt() - 10.0;
+            (r * r + p.z * p.z).sqrt() - 4.0
+        });
+        assert!(
+            off < 1e-9,
+            "the torus's extension is {off} off the tube r 4"
+        );
+        let sphere = Sphere::new(
+            &k,
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Extent2d::from_bounds(0.0, -30.0, 120.0, 40.0),
+            5.0,
+            SphereOptions::default(),
+        )
+        .unwrap();
+        let off = wr650_off_surface(Surface::from(sphere), 2.0, |p| p.length() - 7.0);
+        assert!(off < 1e-9, "the sphere's extension is {off} off radius 7");
     }
 }
