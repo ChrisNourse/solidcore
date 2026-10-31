@@ -63,8 +63,8 @@ pub fn export(path: &str, input: &[f64]) -> Result<Fixture, FfiError> {
 /// # Record contract
 ///
 /// Op 2 returns only its fixed prefix (status, outputs, mark deltas and locks, the
-/// face-use shells and the source/destination counts). Ops 0 and 1 return that same
-/// prefix followed by the whole post-operation graph as `tag value` pairs (`0` an
+/// face-use shells and the source/destination counts). Ops 0 and 1 return their fixed
+/// fields followed by the whole post-operation graph as `tag value` pairs (`0` an
 /// integer, `1` a double), in `topology.brep_p10`'s traversal order:
 ///
 /// - op 0 exports the source B-rep after `TestClosureSplitRegion`;

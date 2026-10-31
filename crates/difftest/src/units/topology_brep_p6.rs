@@ -5,7 +5,7 @@
 //! Closure passes compare actual statuses, output reset, shell ownership, context
 //! mark advancement/locks, and every face-use mark. Copy compares the same fixed
 //! state plus the whole destination B-rep graph (its copied edges' intervals,
-//! tolerances and curves, and their vertices), including empty-input controls.
+//! tolerances and sampled curves, and their vertices), including empty-input controls.
 //! Op 3 runs `MakeFaceTopology` one or more times (each on the B-rep the previous
 //! call left) with real loops of edge uses, loop vertices, surfaces and UV curves,
 //! then compares every call's status and outputs, the context marks and the whole
