@@ -198,6 +198,10 @@ const FORK_RECORDS_WITHOUT_FIX: &[(&str, &str)] = &[
         "the fork's fix (smlib 6e77631) is not on the fork's main yet; its field `fillet_trace_reaches_rails` is in `off` until it lands",
     ),
     (
+        "WR-611",
+        "the fork's fix (smlib 3f22e97) is not on the fork's main yet; its field `fillet_rail_end_on_continued_surface` is in `off` until it lands",
+    ),
+    (
         "WR-594",
         "the fork's fix (smlib 5fdefb9) is not on the fork's main yet; its field `fillet_rails_meet_at_one_end_point` is in `off` until it lands",
     ),
