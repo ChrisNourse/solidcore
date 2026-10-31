@@ -95,10 +95,14 @@ enum OpIn {
         mse: f64,
         lsr: f64,
     },
-    /// The copy constructor (`api`: `SmApiBrepCopy`).
+    /// The copy constructor (`api`: `SmApiBrepCopy`). With `plain` (which implies
+    /// `api`) the Rust copy is `brep_copy`, the copy without the caller's namings or
+    /// notification environment (#2010).
     Copy {
         analytics: bool,
         api: bool,
+        #[serde(default)]
+        plain: bool,
     },
     Merge {
         analytics: bool,
@@ -146,11 +150,32 @@ enum OpIn {
     ApiCopyNull,
     /// Every face and edge tagged with its own long attribute (behaviour `behavior`, an
     /// `SmAttributeBehaviorType` value), then `SmApiBrepCopy`; also compares the
-    /// attributes of the copy's and the source's faces and edges (issue #1462).
+    /// attributes of the copy's and the source's faces and edges (issue #1462). With
+    /// `shared_naming` the Rust copy names its source by the copy's own naming
+    /// ([`key_of`], not [`source_key_of`]), the B-rep's own naming a caller reaches for
+    /// (the C++ side has no names). With `plain` the Rust copy is `brep_copy`
+    /// (#2010), without the caller's namings or notification environment.
     AttributedCopy {
         #[serde(default)]
         behavior: u8,
+        #[serde(default)]
+        shared_naming: bool,
+        #[serde(default)]
+        plain: bool,
     },
+    /// Every face and edge tagged as for `AttributedCopy`, then `MergeBrep` of the B-rep into
+    /// a second build of it; compares the second build's and the source's attributes (does
+    /// the merge carry the merged B-rep's attributes?).
+    AttributedMerge {
+        #[serde(default = "yes")]
+        analytics: bool,
+        #[serde(default)]
+        behavior: u8,
+    },
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,9 +248,22 @@ fn op_args(op: &OpIn, c: &[usize; 10]) -> Result<Option<(Op, Vec<f64>)>, Harness
         OpIn::ApiCopyNull => (Op::ApiCopyNull, vec![0.0]),
         OpIn::TurnNurbs => (Op::TurnNurbs, vec![]),
         OpIn::TurnNurbsOffset { offset } => (Op::TurnNurbsOffset, vec![*offset]),
-        OpIn::Copy { analytics, api } => (Op::Copy, vec![flag(*analytics), flag(*api)]),
+        OpIn::Copy {
+            analytics,
+            api,
+            plain,
+        } => (Op::Copy, vec![flag(*analytics), flag(*api || *plain)]),
         OpIn::Merge { analytics } => (Op::Merge, vec![flag(*analytics)]),
-        OpIn::AttributedCopy { behavior } => (Op::AttributedCopy, vec![f64::from(*behavior)]),
+        OpIn::AttributedMerge {
+            analytics,
+            behavior,
+        } => (
+            Op::AttributedMerge,
+            vec![flag(*analytics), f64::from(*behavior)],
+        ),
+        OpIn::AttributedCopy { behavior, .. } => {
+            (Op::AttributedCopy, vec![f64::from(*behavior)])
+        }
         OpIn::CopyVertices { vertices } => {
             let mut v = vec![vertices.len() as f64];
             for &s in vertices {
@@ -1406,9 +1444,15 @@ fn run_rust_op_in(
             let (s, _) = status(bp3::api_brep_copy(k, &mut env, None, &source_key_of))?;
             out.push(s);
         }
-        OpIn::Copy { analytics, api } => {
+        OpIn::Copy {
+            analytics,
+            api,
+            plain,
+        } => {
             let src: &Brep = b;
-            let r = if *api {
+            let r = if *plain {
+                bp3::brep_copy(k, src)
+            } else if *api {
                 bp3::api_brep_copy(k, &mut env, Some(src), &source_key_of)
             } else {
                 bp3::copy_brep(
@@ -1428,18 +1472,54 @@ fn run_rust_op_in(
             out.push(flag(c.editing_enabled()));
             put_counts(&mut out, &c)?;
         }
-        OpIn::AttributedCopy { behavior } => {
+        OpIn::AttributedCopy {
+            behavior,
+            shared_naming,
+            plain,
+        } => {
             let behavior = Behavior::from_code(i32::from(*behavior))
                 .map_err(|e| Fail::Harness(harness(format!("behavior: {e}"))))?;
             tag_brep(b, behavior)?;
             let src: &Brep = b;
-            let c = must(bp3::api_brep_copy(k, &mut env, Some(src), &source_key_of))?;
+            let source: &dyn Fn(EntityRef) -> ObjectRef = if *shared_naming {
+                &key_of
+            } else {
+                &source_key_of
+            };
+            let c = if *plain {
+                must(bp3::brep_copy(k, src))?
+            } else {
+                must(bp3::api_brep_copy(k, &mut env, Some(src), source))?
+            };
             out.push(0.0);
             out.push(c.tolerance());
             out.push(flag(c.editing_enabled()));
             put_counts(&mut out, &c)?;
             put_attribute_rows(&mut out, &c)?;
             put_attribute_rows(&mut out, src)?;
+        }
+        OpIn::AttributedMerge {
+            analytics,
+            behavior,
+        } => {
+            let dst = second.ok_or_else(|| Fail::Harness(harness("no second B-rep")))?;
+            let behavior = Behavior::from_code(i32::from(*behavior))
+                .map_err(|e| Fail::Harness(harness(format!("behavior: {e}"))))?;
+            tag_brep(b, behavior)?;
+            let (s, _) = status(bp3::merge_brep(
+                k,
+                &mut env,
+                dst,
+                b,
+                &source_key_of,
+                None,
+                None,
+                *analytics,
+            ))?;
+            out.push(s);
+            put_counts(&mut out, dst)?;
+            put_attribute_rows(&mut out, dst)?;
+            put_attribute_rows(&mut out, b)?;
         }
         OpIn::Merge { analytics } => {
             let dst = second.ok_or_else(|| Fail::Harness(harness("no second B-rep")))?;
@@ -1624,9 +1704,11 @@ fn put_vertex_points(o: &mut Vec<f64>, b: &Brep, vertices: &[VertexId]) -> Resul
 fn run_rust(i: &Inputs) -> Result<Output, HarnessError> {
     let mut k = Kernel::default();
     if standalone(&i.op) {
-        let Some((_, args)) = op_args(&i.op, &[0; 10])? else {
+        let Some((op, args)) = op_args(&i.op, &[0; 10])? else {
             return Ok(Output::err("no target"));
         };
+        // an input the FFI refuses is a harness error on both sides
+        ffi::validate(op, "", &args, &[0; 10], false).map_err(|e| ffi_err(&e))?;
         let mut b = Brep::new();
         return match run_rust_op(&mut k, &mut b, None, &i.op, &args) {
             Ok(out) => Ok(Output::new().values("out", out)),
@@ -1638,13 +1720,30 @@ fn run_rust(i: &Inputs) -> Result<Output, HarnessError> {
         Ok(x) => x,
         Err(o) => return Ok(o),
     };
-    let Some((_, args)) = op_args(&i.op, &c)? else {
+    let Some((op, args)) = op_args(&i.op, &c)? else {
         return Ok(Output::err("no target"));
     };
+    // an input the FFI refuses is a harness error on both sides: the Rust port works
+    // through the guarded hang regimes as upstream does (HANG-16: a `TurnNurbsOffset` of
+    // 1e300 kept it busy for 25 s in the UV trim curve rebuild, nightly fuzz00282), so it
+    // must not run them (fuzz mutations reach them with the C++ side refused). The
+    // checks see the same input vector as the C++ side and this B-rep's own counts.
+    let mut input = head(i)?;
+    input.extend(&args);
+    ffi::validate(
+        op,
+        &path_of(&i.brep)?,
+        &input,
+        &c,
+        b.infinite_region().is_some(),
+    )
+    .map_err(|e| ffi_err(&e))?;
     let mut second = match i.op {
-        OpIn::Merge { .. } | OpIn::CopyVertices { .. } => Some(own_brep(&mut k, i)?.map_err(
-            |_| harness("the second build of the B-rep failed where the first did not"),
-        )?.0),
+        OpIn::Merge { .. } | OpIn::AttributedMerge { .. } | OpIn::CopyVertices { .. } => {
+            Some(own_brep(&mut k, i)?.map_err(
+                |_| harness("the second build of the B-rep failed where the first did not"),
+            )?.0)
+        }
         _ => None,
     };
     match run_rust_op(&mut k, &mut b, second.as_mut(), &i.op, &args) {
@@ -1680,6 +1779,7 @@ fn gen_op(rng: &mut Rng) -> (OpIn, i64) {
             OpIn::Copy {
                 analytics: rng.chance(0.5),
                 api: rng.chance(0.5),
+                plain: false,
             },
             editing,
         ),
@@ -1999,6 +2099,26 @@ mod tests {
         };
         let err = run_cpp(&case(1e300)).unwrap_err().to_string();
         assert!(err.contains("HANG-16"), "{err}");
+        // the Rust side applies the same guard (`ffi::validate`): the port works through
+        // the regime for tens of seconds (nightly fuzz00282, a 1e300 TurnNurbsOffset)
+        let err = run_rust(&case(1e300)).unwrap_err().to_string();
+        assert!(err.contains("HANG-16"), "{err}");
         assert!(run_cpp(&case(0.5)).is_ok());
+    }
+
+    /// Nightly fuzz case `topology.brep_p3/fuzz00282` (`nurbs_off_box_with_large_fillet_-0.05`
+    /// with `/offset = 1e+300`): the FFI refuses the C++ side (HANG-16) and the Rust side
+    /// must be refused the same way instead of running the operation (it took 25 s).
+    #[test]
+    fn huge_offset_is_refused_on_both_sides() {
+        let v = serde_json::json!({
+            "brep": {"kind": "file", "file": "box_with_large_fillet.smb", "rebuild": false},
+            "editing": -1, "op": "turn_nurbs_offset", "offset": 1e300
+        });
+        let i: Inputs = serde_json::from_value(v).unwrap();
+        let cpp = run_cpp(&i).unwrap_err().to_string();
+        let rust = run_rust(&i).unwrap_err().to_string();
+        assert!(cpp.contains("HANG-16"), "{cpp}");
+        assert_eq!(cpp, rust);
     }
 }

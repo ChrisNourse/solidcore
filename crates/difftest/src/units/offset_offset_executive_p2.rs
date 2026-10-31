@@ -57,7 +57,8 @@
 //! trim curves, which offset queries may make lazily and the native block omits.
 //! Static/member shell lists currently support source faces only; nullable and
 //! foreign lists are exercised through the API's origin-qualified interface.
-//! Positive B-rep tolerances avoid the unported automatic `SetTolerance` path;
+//! Nonpositive B-rep tolerances follow the shim's `SmZoneTol3d` conversion and
+//! automatic `SetTolerance` path;
 //! member approximation tolerance still covers zero, negative and -1 sentinel.
 //! All numeric keys have ZERO absolute floor; signed-zero inputs are retained.
 //! A fixture case whose native vertex positions follow heap addresses (upstream
@@ -85,6 +86,7 @@ use solidcore::geom::extent1d::Extent1d;
 use solidcore::geom::extent2d::Extent2d;
 use solidcore::geom::object::{FaceKey, ObjectRef};
 use solidcore::kernel::Kernel;
+use solidcore::mass::integrator::properties::{brep_volume, PropertyAttributes};
 use solidcore::math::Vec3;
 use solidcore::nurbs::b_spline_surface_n_lib::p2::OrientType;
 use solidcore::nurbs::knots::Side;
@@ -375,6 +377,102 @@ struct Inputs {
     /// and edge attribute sets are compared (`attributes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attributed: Option<u8>,
+    /// Volume queries (#1528: a query that changes a later operation, fixtures only):
+    /// `result` compares the result's `SmApiBrepComputeVolume` after the call;
+    /// `source_first` also queries the operand's volume before the call (the shim's
+    /// measured entry point, `brep_volume` here), both compared as `volumes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume_query: Option<VolumeQuery>,
+}
+/// [`Inputs::volume_query`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VolumeQuery {
+    Result,
+    SourceFirst,
+}
+impl VolumeQuery {
+    const fn native(self) -> ffi::VolumeQuery {
+        match self {
+            Self::Result => ffi::VolumeQuery::Result,
+            Self::SourceFirst => ffi::VolumeQuery::SourceFirst,
+        }
+    }
+}
+/// The accuracy of the volume queries (the shim's `volume_accuracy`).
+const VOLUME_ACCURACY: f64 = 1e-6;
+/// `SmApiBrepComputeVolume` of `brep` as the shim's `put_volume`: `status volume` (the
+/// native status, volume `0` on failure), `-1 0` without B-rep.
+fn volume_pair(kernel: &Kernel, brep: Option<&mut Brep>) -> RResult<[f64; 2]> {
+    let Some(brep) = brep else {
+        return Ok([-1.0, 0.0]);
+    };
+    let store = AttributeStore::default();
+    let attributes = PropertyAttributes {
+        store: &store,
+        key_of: &|_| ObjectKey(0),
+    };
+    let (status, volume) = operation(brep_volume(kernel, brep, VOLUME_ACCURACY, &attributes))?;
+    Ok([f64::from(status), volume.unwrap_or(0.0)])
+}
+/// The operand state a volume query can write, as the shim's `put_operand_state` (read
+/// without writing): the number of edge uses holding a UV trim curve, then per edge use
+/// (`SmBrep::GetEdgeuses` order: each edge's uses, edges in `GetEdges` order) `0` without
+/// trim, `2` for one without NURB, else `1` and its first and last homogeneous control
+/// points `x y w`; then per vertex use (`GetVertexuses` order) `0` when its vertex/face
+/// gap is not initialised, else `1 gap u v`. Empty without B-rep.
+fn operand_state(brep: Option<&Brep>) -> HResult<Vec<f64>> {
+    let Some(brep) = brep else {
+        return Ok(Vec::new());
+    };
+    let mut edgeuses = Vec::new();
+    for e in brep_p1::edges(brep, None).map_err(setup)? {
+        edgeuses.extend(solidcore::topology::edge::edgeuses(brep, e, None, None).map_err(setup)?);
+    }
+    let mut vertexuses = Vec::new();
+    for v in brep_p1::vertices(brep, None).map_err(setup)? {
+        vertexuses.extend(solidcore::topology::vertex::vertexuses(brep, v).map_err(setup)?);
+    }
+    let trims = edgeuses
+        .iter()
+        .map(|&eu| {
+            brep.edgeuse(eu)
+                .map(|r| r.uv_trim_curve.as_ref())
+                .map_err(setup)
+        })
+        .collect::<HResult<Vec<_>>>()?;
+    let mut out = vec![trims.iter().filter(|t| t.is_some()).count() as f64];
+    for trim in trims {
+        let Some(curve) = trim else {
+            out.push(0.0);
+            continue;
+        };
+        let base = match curve.kind() {
+            CurveKind::BSpline(x) => Some(x),
+            CurveKind::Ellipse(x) => Some(x.base()),
+            CurveKind::Hyperbola(x) => Some(x.base()),
+            CurveKind::Parabola(x) => Some(x.base()),
+            CurveKind::Line(x) => Some(x.base()),
+            _ => None,
+        };
+        let points = base.and_then(|b| b.gw_nurb()).map(solidcore::nurbs::crv_basic::Curve::cpts);
+        match points.and_then(|p| p.first().zip(p.last())) {
+            Some((first, last)) => {
+                out.push(1.0);
+                out.extend([first.x, first.y, first.w, last.x, last.y, last.w]);
+            }
+            None => out.push(2.0),
+        }
+    }
+    for vu in vertexuses {
+        let gap = &brep.vertexuse(vu).map_err(setup)?.vertex_face_gap;
+        if gap.is_init() {
+            out.extend([1.0, gap.gap_3d, gap.face_uv.x, gap.face_uv.y]);
+        } else {
+            out.push(0.0);
+        }
+    }
+    Ok(out)
 }
 impl Inputs {
     fn native(&self) -> ffi::Request {
@@ -427,11 +525,6 @@ fn validate(input: &Inputs) -> HResult<()> {
         cfg.member_distance,
         cfg.member_approx_tol,
     ])?;
-    if input.tolerance <= 0.0 {
-        return Err(bad(
-            "automatic B-rep tolerance is outside this Rust fixture projection",
-        ));
-    }
     if cfg.member_operation > 4 || (input.operation.member() && cfg.member_distance < 0.0) {
         return Err(bad("invalid native member constructor parameters"));
     }
@@ -696,6 +789,18 @@ fn primitive_finite(origin: [f64; 3], radius: f64) -> HResult<()> {
     Ok(())
 }
 
+fn set_fixture_tolerance(kernel: &Kernel, brep: &mut Brep, tolerance: f64) -> HResult<()> {
+    if tolerance <= 0.0 {
+        // The shim converts double to SmZoneTol3d (fabs) before SetTolerance;
+        // zero computes a tolerance from the B-rep's bounds at this point.
+        solidcore::topology::brep::p2::set_tolerance(kernel, brep, tolerance.abs(), false, true)
+            .map_err(setup)?;
+    } else {
+        brep.set_tolerance(tolerance);
+    }
+    Ok(())
+}
+
 fn build(kernel: &mut Kernel, fixture: &Fixture, tolerance: f64, namespace: u64) -> HResult<Brep> {
     if let Fixture::File { path } = fixture {
         // The Rust reader alone (`SmBrep::ReadFromFile` into `new SmBrep(ctx)`, as the
@@ -719,18 +824,18 @@ fn build(kernel: &mut Kernel, fixture: &Fixture, tolerance: f64, namespace: u64)
             height,
         )
         .map_err(setup)?;
-        brep.set_tolerance(tolerance);
+        set_fixture_tolerance(kernel, &mut brep, tolerance)?;
         return Ok(brep);
     }
     if let Fixture::Sphere { origin, radius } = *fixture {
         let mut brep =
             solidcore::primitive::api_primitives::create_sphere(kernel, v3(origin), radius)
                 .map_err(setup)?;
-        brep.set_tolerance(tolerance);
+        set_fixture_tolerance(kernel, &mut brep, tolerance)?;
         return Ok(brep);
     }
     let mut brep = Brep::new();
-    brep.set_tolerance(tolerance);
+    set_fixture_tolerance(kernel, &mut brep, tolerance)?;
     // SmBrep.cpp:532–537: the constructor explicitly creates a void infinite region.
     let region = brep
         .add_region_record(Region {
@@ -891,7 +996,7 @@ fn build_box(
     let [dx, dy, dz] = size;
     let mut brep = solidcore::primitive::api_primitives::create_box(kernel, v3(origin), dx, dy, dz)
         .map_err(setup)?;
-    brep.set_tolerance(tolerance);
+    set_fixture_tolerance(kernel, &mut brep, tolerance)?;
     Ok(brep)
 }
 
@@ -1893,6 +1998,18 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
             tag_source(brep, behavior)?;
         }
     }
+    // the shim's `volume_query == 1`: the operand's volume, queried before the call
+    let source_volume = if input.volume_query == Some(VolumeQuery::SourceFirst) {
+        volume_pair(&kernel, source.as_mut())?
+    } else {
+        [-1.0, 0.0]
+    };
+    // the operand state right after the (optional) query, before the call
+    let source_state = if input.volume_query.is_some() {
+        operand_state(source.as_ref())?
+    } else {
+        Vec::new()
+    };
     if let Some(brep) = foreign.as_mut() {
         register_notification_brep(&mut records, brep, NAMESPACE_FOREIGN);
     }
@@ -1996,7 +2113,7 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
             &mut notifications,
         ),
     };
-    let (status, result) = operation(result)?;
+    let (status, mut result) = operation(result)?;
     let result_projection = result.as_ref().map(rust_result_projection).transpose()?;
     let offset_projection = exec
         .as_ref()
@@ -2076,6 +2193,13 @@ fn rust_output(input: &Inputs) -> RResult<Output> {
     ] {
         output = project(output, key, projection);
     }
+    if input.volume_query.is_some() {
+        // the result's volume, after every snapshot (as the shim's tail)
+        let result_volume = volume_pair(&kernel, result.as_mut())?;
+        output = output
+            .values("volumes", [source_volume, result_volume].concat())
+            .values("operand", source_state);
+    }
     Ok(output)
 }
 
@@ -2086,9 +2210,20 @@ impl UnitDiff for Runner {
     fn run_cpp(&self, case: &Case) -> HResult<Output> {
         let input: Inputs = case.parse()?;
         // FFI argument errors are NEVER constructor rejections or native statuses.
-        let outcome = ffi::eval(&input.native())
+        let Some(query) = input.volume_query else {
+            let outcome = ffi::eval(&input.native())
+                .map_err(|error| bad(format!("native p2 adapter: {error}")))?;
+            return native_outcome(&input, outcome);
+        };
+        let (outcome, volumes) = ffi::eval_measured(&input.native(), query.native())
             .map_err(|error| bad(format!("native p2 adapter: {error}")))?;
-        native_outcome(&input, outcome)
+        let output = native_outcome(&input, outcome)?;
+        Ok(match volumes {
+            Some(v) => output
+                .values("volumes", [v.source_before, v.result].concat())
+                .values("operand", v.operand),
+            None => output,
+        })
     }
     fn run_rust(&self, case: &Case) -> HResult<Output> {
         match rust_output(&case.parse()?) {
@@ -2176,6 +2311,7 @@ fn generated(rng: &mut Rng) -> Inputs {
         },
         heap_ordered_vertices: false,
         attributed: None,
+        volume_query: None,
     };
     match category {
         0 | 1 => {
@@ -2295,6 +2431,7 @@ mod tests {
             config: Config::default(),
             heap_ordered_vertices: false,
             attributed: None,
+            volume_query: None,
         }
     }
     fn case(input: &Inputs) -> Case {
@@ -2303,6 +2440,43 @@ mod tests {
             name: "unit-test".into(),
             source: CaseSource::Inline,
             inputs: serde_json::to_value(input).unwrap(),
+        }
+    }
+
+    #[test]
+    fn nonpositive_brep_tolerances_match_native_setup() {
+        for fixture in [
+            Fixture::Empty,
+            wire([0.0; 3], 2.0),
+            sheet([0.0; 3], 2.0, 0),
+            Fixture::Box {
+                origin: [0.0; 3],
+                size: [3.0, 4.0, 12.0],
+            },
+            Fixture::Sphere {
+                origin: [0.0; 3],
+                radius: 2.0,
+            },
+            Fixture::Cylinder {
+                origin: [0.0; 3],
+                radius: 2.0,
+                height: 3.0,
+            },
+        ] {
+            for tolerance in [0.0, -0.0, -1.0, -1e300] {
+                let mut input = input(Operation::Solid);
+                input.source = Some(fixture.clone());
+                input.tolerance = tolerance;
+                input.config.member_distance = 0.0;
+                let case = case(&input);
+                let native = Runner.run_cpp(&case).unwrap();
+                let rust = Runner.run_rust(&case).unwrap();
+                assert!(rust.deferred.is_none());
+                assert!(
+                    crate::compare::compare(&native, &rust, Runner.abs_floors()).pass(),
+                    "{fixture:?}, tolerance={tolerance}: native={native:?}, rust={rust:?}"
+                );
+            }
         }
     }
     fn empty_block(tolerance: f64) -> ffi::BrepSnapshot {
@@ -2960,7 +3134,30 @@ mod tests {
                 }
                 compared += 1;
             } else if case.name.ends_with("_selected") {
-                // The tiny box is an empty B-rep: no face 0 to select.
+                // The smallest box the native constructor builds here has a face 0 to
+                // select: compared.
+                let rust = Runner.run_rust(&case).unwrap();
+                for output in [&cpp, &rust] {
+                    assert!(output.rejected.is_none() && output.error.is_none());
+                }
+                let comparison = crate::compare::compare(&cpp, &rust, Runner.abs_floors());
+                assert!(comparison.pass(), "{}: {comparison:?}", case.name);
+                compared += 1;
+                // The tiny box the case held before is an empty B-rep: no face 0 to
+                // select, a native fixture rejection.
+                let mut tiny = case.clone();
+                let side = if case.name.contains("foreign") {
+                    "foreign"
+                } else {
+                    "source"
+                };
+                let size = if case.name.contains("translated") {
+                    1e-3
+                } else {
+                    1e-6
+                };
+                tiny.inputs[side]["size"] = serde_json::json!([size, size, size]);
+                let cpp = Runner.run_cpp(&tiny).unwrap();
                 assert_eq!(
                     cpp.rejected.as_deref(),
                     Some("native fixture constructor status_1001")
@@ -2980,7 +3177,7 @@ mod tests {
                 compared += 1;
             }
         }
-        assert_eq!((rejected, compared), (4, 6));
+        assert_eq!((rejected, compared), (4, 10));
     }
 
     fn assert_native_constructor_control(case: &Case, cpp: &Output, counts: [i64; 5]) {
