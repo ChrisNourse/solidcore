@@ -1,4 +1,4 @@
-//! WR-658: planar-path profile placement must follow a rigidly moved setup.
+//! WR-1256: planar-path profile placement must follow a rigidly moved setup.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 use solidcore::curve::curve::Curve;
 use solidcore::geom::attribute::{AttributeStore, ObjectKey};

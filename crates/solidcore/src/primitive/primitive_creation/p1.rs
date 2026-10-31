@@ -24,7 +24,7 @@
 //! the original signatures retain pinned behavior. The `SetCanonical` of
 //! an identity profile-normal frame is elided (it always succeeds upstream).
 //! `planar_path_profile_in_path_frame` performs placement in the whole path's own
-//! XY frame (WR-658); XY and straight paths keep upstream arithmetic.
+//! XY frame (WR-1256); XY and straight paths keep upstream arithmetic.
 //! No recursion. Primitive topology construction stops at the first unported
 //! B-rep edit; it never fabricates faces from arena records.
 
@@ -287,7 +287,7 @@ pub(super) fn extend_path_curves_impl(
 ///
 /// With `Kernel::fixes.planar_path_profile_in_path_frame`, paths with a plane outside
 /// XY place the profile in that plane's frame at the path's start and map it back
-/// (WR-658). Paths parallel to XY keep the exact legacy placement, with either normal,
+/// (WR-1256). Paths parallel to XY keep the exact legacy placement, with either normal,
 /// and straight paths the legacy placement.
 ///
 /// # Errors
@@ -323,7 +323,7 @@ pub(super) fn position_profile_curves_impl(
     checked: bool,
     whole_path: &[Curve],
 ) -> Result<()> {
-    // WR-658: perform the legacy placement in the whole path's own XY frame, one frame
+    // WR-1256: perform the legacy placement in the whole path's own XY frame, one frame
     // for all its pieces. Both of its rotations use global axes; changing just the final
     // Y axis leaves the profile-normal rotation (and its roll) pose dependent.
     if k.fixes.planar_path_profile_in_path_frame {
