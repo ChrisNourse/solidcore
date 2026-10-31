@@ -683,9 +683,9 @@ mod tests {
         assert!((p.min_dihedral_ang_deg - 90.0).abs() < 1e-9);
     }
 
-    /// tangency-labs/smlib 7a35f33 (SmVertex::HasParallelFaces): a face pair whose
-    /// points or normals cannot be evaluated is not compared. Here one face's surface
-    /// is swapped for one that cannot be evaluated after its gap was cached.
+    // tangency-labs/smlib 7a35f33 (SmVertex::HasParallelFaces): a face pair whose
+    // points or normals cannot be evaluated is not compared. Here one face's surface
+    // is swapped for one that cannot be evaluated after its gap was cached.
     #[test]
     fn issue_2009_parallel_faces_skip_an_unevaluable_pair() {
         let (k, mut b, v) = box_corner();

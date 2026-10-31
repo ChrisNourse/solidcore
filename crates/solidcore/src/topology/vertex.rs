@@ -1853,9 +1853,9 @@ mod tests {
         assert!(is_topological_vertex(&k, &mut b, v[1]).unwrap());
     }
 
-    /// tangency-labs/smlib 7a35f33 (SmVertex::IsTopologicalVertex): without the angle
-    /// between the two tangents (the default zero tangent of a failed end evaluation)
-    /// the curves are not shown to meet G1, so the vertex is kept.
+    // tangency-labs/smlib 7a35f33 (SmVertex::IsTopologicalVertex): without the angle
+    // between the two tangents (the default zero tangent of a failed end evaluation)
+    // the curves are not shown to meet G1, so the vertex is kept.
     #[test]
     fn issue_2009_vertex_without_tangent_angle_is_kept() {
         use crate::curve::composite_curve::CompositeCurve;

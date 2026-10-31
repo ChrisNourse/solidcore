@@ -4701,7 +4701,7 @@ mod tests {
         // tangency-labs/smlib 8311f8e (SmCurve::ApproximateLength): a curve that cannot
         // be evaluated has no length (SM_UNDEF_DOUBLE); upstream sums distances
         // between unset points.
-        let empty = Curve::from(crate::nurbs::b_spline_curve::BSplineCurve::new(3));
+        let empty = Curve::from(BSplineCurve::new(3));
         let ivl = Extent1d::from_min_max(0.0, 1.0);
         let off = Kernel::default();
         let mut on = Kernel::default();

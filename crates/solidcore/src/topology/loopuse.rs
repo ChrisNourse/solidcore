@@ -1330,15 +1330,22 @@ fn ignored<T>(r: Result<T>) -> Result<Option<T>> {
     }
 }
 
-/// An end point of the corner walk: `Ok(Some(Some(p)))` when evaluated, `Ok(Some(None))`
-/// when upstream ignores the failure and carries the previous value on, and `Ok(None)`
-/// when, with the opt-in
-/// [`crate::kernel::UpstreamFixes::topology_failed_evaluations_propagate`], the edge use
-/// adds no boundary (the fork's `continue`, tangency-labs/smlib 7a35f33).
-fn evaluated<T>(k: &Kernel, r: Result<T>) -> Result<Option<Option<T>>> {
+/// An end point of the corner walk.
+enum CornerEnd<T> {
+    /// Evaluated, or `None` where upstream ignores the failure and carries the previous
+    /// value on.
+    Value(Option<T>),
+    /// With the opt-in
+    /// [`crate::kernel::UpstreamFixes::topology_failed_evaluations_propagate`], the edge
+    /// use adds no boundary (the fork's `continue`, tangency-labs/smlib 7a35f33).
+    Skip,
+}
+
+/// The [`CornerEnd`] of an evaluation.
+fn evaluated<T>(k: &Kernel, r: Result<T>) -> Result<CornerEnd<T>> {
     match ignored(r)? {
-        None if k.fixes.topology_failed_evaluations_propagate => Ok(None),
-        v => Ok(Some(v)),
+        None if k.fixes.topology_failed_evaluations_propagate => Ok(CornerEnd::Skip),
+        v => Ok(CornerEnd::Value(v)),
     }
 }
 
@@ -1396,13 +1403,15 @@ pub(crate) fn uv_corner_boundaries_with_topology(
         if let Some(trim) = trim {
             // end points
             ivl = trim.natural_interval();
-            let Some(beg) = evaluated(k, trim.evaluate_point(k, ivl.evaluate(0.0)))? else {
+            let CornerEnd::Value(beg) = evaluated(k, trim.evaluate_point(k, ivl.evaluate(0.0)))?
+            else {
                 continue;
             };
             if let Some(p) = beg {
                 uv_beg = p;
             }
-            let Some(end) = evaluated(k, trim.evaluate_point(k, ivl.evaluate(1.0)))? else {
+            let CornerEnd::Value(end) = evaluated(k, trim.evaluate_point(k, ivl.evaluate(1.0)))?
+            else {
                 continue;
             };
             if let Some(p) = end {
@@ -1426,11 +1435,11 @@ pub(crate) fn uv_corner_boundaries_with_topology(
                 .as_ref()
                 .ok_or_else(|| null("GetUVCornerBoundaries: no curve"))?;
             ivl = edge.interval;
-            let Some(beg) = evaluated(k, c.evaluate_point(k, ivl.min()))? else {
+            let CornerEnd::Value(beg) = evaluated(k, c.evaluate_point(k, ivl.min()))? else {
                 continue;
             };
             let beg = beg.unwrap_or(Vec3::UNDEF);
-            let Some(end) = evaluated(k, c.evaluate_point(k, ivl.max()))? else {
+            let CornerEnd::Value(end) = evaluated(k, c.evaluate_point(k, ivl.max()))? else {
                 continue;
             };
             let end = end.unwrap_or(Vec3::UNDEF);

@@ -877,9 +877,7 @@ mod tests {
         let mut b = square(plane(), true, &[]);
         b.edgeuse_mut(EdgeuseId::from_index(3))
             .unwrap()
-            .uv_trim_curve = Some(Curve::from(
-            crate::nurbs::b_spline_curve::BSplineCurve::new(2),
-        ));
+            .uv_trim_curve = Some(Curve::from(BSplineCurve::new(2)));
         assert!(contains(&mut b.clone(), [0.0, 0.0]).is_err());
         let mut k = Kernel::default();
         k.fixes.query_statuses_pass_on = true;

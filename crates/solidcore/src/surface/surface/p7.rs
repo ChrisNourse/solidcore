@@ -3122,7 +3122,7 @@ mod tests {
         // tangency-labs/smlib 21dcf69 (SmSurface::IsClosed): a surface that cannot be
         // evaluated is not shown closed. Coverage only: upstream's unset ends coincide
         // but its short-curve test then rejects them too.
-        let s = Surface::from(crate::nurbs::b_spline_surface::BSplineSurface::default());
+        let s = Surface::from(BSplineSurface::default());
         let dom = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
         assert!(s
             .evaluate_point(&Kernel::default(), Point2::new(0.0, 0.0))

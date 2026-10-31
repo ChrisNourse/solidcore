@@ -1402,10 +1402,10 @@ mod tests {
         (b, id)
     }
 
-    /// tangency-labs/smlib 666242b (SmEdgeuse::IsEdgeuseSideInSurface): a sample whose
-    /// point cannot be evaluated gives no evidence, `TRUE`, as for what it cannot
-    /// classify; upstream drops the unset point and classifies it. Coverage only: a
-    /// box's planes have no natural boundary, so upstream answers `TRUE` as well.
+    // tangency-labs/smlib 666242b (SmEdgeuse::IsEdgeuseSideInSurface): a sample whose
+    // point cannot be evaluated gives no evidence, `TRUE`, as for what it cannot
+    // classify; upstream drops the unset point and classifies it. Coverage only: a
+    // box's planes have no natural boundary, so upstream answers `TRUE` as well.
     #[test]
     fn issue_2009_side_in_surface_without_sample_points_is_true() {
         let mut k = Kernel::default();
