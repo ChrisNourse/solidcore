@@ -19,15 +19,19 @@ Updates: WR-100
 
 ##### Measured witness (2026-10-31)
 
-- **Tested binary:** `.slim/worktrees/new20-copy-faces-geometry` HEAD `6ca9deed1`
-  (base `df64e8281`), its prebuilt `bin/debug/difftest` (04:23) and shim/static C++
-  artifacts. This is the tested head, not `944`.
+- **Tested binary:** the prebuilt `bin/debug/difftest` and shim/static C++ artifacts
+  from `.slim/worktrees/new20-copy-faces-geometry`. Its 04:23 mtime precedes the
+  `6ca9deed1` commit timestamp; the binary has no embedded revision attestation, so
+  `6ca9deed1` (base `df64e8281`) is a verified source-comparison revision, not a claim
+  that the binary was built at that commit. The worktree has since moved. The 14
+  path-relevant source files are identical at `6012b3231`, `6ca9deed1` and
+  `9d8996e27`; the witness is not a fresh build or runtime gate at `944` or this PR.
 - **Source-of-truth worktree:** `.slim/worktrees/new20-face-points-domain` HEAD
   `9d8996e27` (base `9441664ac`). The 14 relevant semantic files (`surface_drop_lib`
   p1/p2/p3, `nurbs_crv`, `srf_basic`, `b_spline_surface/p1`, `surface/surface/p2`,
   `math`, both FFI p2/p3, both shims p2/p3, both difftest runners p2/p3) are byte
-  identical between `6ca9deed1` and `9d8996e27`, so the prebuilt `6ca` binary is a
-  valid proxy for the `944` source on this path.
+  identical between `6ca9deed1` and `9d8996e27`. This is semantic source-continuity
+  evidence for this path, not an attestation of the binary's build commit.
 - **Pin used by the witness:** `.slim/worktrees/reference-v101` at
   `3fd5b9548d19aa8c12c29bc9637a96d42a06f8a5`; line numbers above are from that pin.
   This implementation lane uses the separate sparse `reference-canonical/upstream`
@@ -56,8 +60,10 @@ Geometry: a non-rational degree-2x2 B-spline surface over a 3x3 net (all weights
 `[0,0,0,1e-15,1e-15,1e-15]` and the U-tiny case swaps them. The curve is a degenerate
 (point) degree-1 B-spline with two coincident control points at `(10,10,10)`, interval
 `[0,1]`, `tol=1e-4`, `keep_all=true`, `want_record=true`. The tiny knot span is
-collapsed by `sm_FixupKnotVector` (`SM_EFF_ZERO_PARAM = 1.2e-8`) in both constructors,
-so the measured natural length is exactly 0, not `1e-15`.
+collapsed by the scaled-zero equality step of `sm_FixupKnotVector` (about `1e-12`
+at these endpoints) in both constructors, so the measured natural length is exactly
+0, not `1e-15`. `SM_EFF_ZERO_PARAM = 1.2e-8` is the subsequent spread threshold,
+not the equality/collapse threshold.
 
 ##### Bounds and limits
 
@@ -81,6 +87,9 @@ so the measured natural length is exactly 0, not `1e-15`.
 
 The V-tiny case also measured `closed_v=1 (true)`, `srf_closure=V` and
 `approx_singularities=15`: the drop went on instead of taking the early `1034` exit.
+The default V-tiny and normal calls return `Ok` with empty curves; `1020 / 19` is
+the failure-record state, not an outer `SM_ERR`. The U-tiny call returns outer
+`SM_ERR` with the recorded `1034 / 17` diagnostic.
 
 ##### Rust port
 
@@ -95,3 +104,10 @@ existing outer `SM_ERR` (1001) with record `fail_status = 1034` /
 (`1020 / 19`, flags `(0, 0)`). Regression tests:
 `intersect::surface_drop_lib::p3::tests::wr100_*`; default-parity fixtures:
 `fixtures/intersect.surface_drop_lib_p3/natural_domain_degeneracy.json`.
+
+These fixtures deliberately retain pinned default behavior, including the wrong
+V flag. If policy later enables this fix by default, handle any confirmed C++
+divergence through the documented WR-100 defect policy; do not rewrite the input
+or expected reference behavior to conceal it. The original temporary witness and
+its hash manifest are preserved; a separate correction records the build-provenance
+and knot-threshold clarifications above.

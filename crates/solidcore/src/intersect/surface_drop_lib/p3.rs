@@ -1633,7 +1633,7 @@ mod tests {
     const WR100_NORMAL_KNOTS: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
     const WR100_TINY_KNOTS: [f64; 6] = [0.0, 0.0, 0.0, 1.0e-15, 1.0e-15, 1.0e-15];
 
-    /// The WR-100 witness surface (temporary proof `wr100-proof/gen_cases.py`): a
+    /// The WR-100 witness surface (fixture `natural_domain_degeneracy.json`): a
     /// non-rational degree 2x2 B-spline over a 3x3 net, its `u`/`v` knot vectors given.
     fn wr100_surface(u: [f64; 6], v: [f64; 6]) -> Surface {
         let net = vec![
@@ -1707,8 +1707,8 @@ mod tests {
     }
 
     /// The U-degenerate counterpart: U length 0 (degenerate) and V length 1, so with the
-    /// fix the record's V flag is 0. The status and path were already `1034 / 17` (the
-    /// wrong V flag happened to trigger the same early exit).
+    /// fix the record's V flag is 0. The status and path were already `1034 / 17`:
+    /// the U flag alone triggered the early exit; the wrong V flag only coincided.
     #[test]
     fn wr100_u_domain_degeneracy_keeps_its_status_and_clears_the_v_flag() {
         let mut k = Kernel::default();
