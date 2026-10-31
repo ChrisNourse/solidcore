@@ -958,6 +958,7 @@ const MIN_SHIFT_CENTER_LENGTH_SQ: f64 = 1.0e6;
 ///
 /// # Errors
 ///
+/// Box errors with `boolean_temporary_transform_statuses`; otherwise only
 /// [`SolidError::Unported`] from the boxes.
 pub fn temporary_brep_transform(
     primary_kernel: &Kernel,
@@ -965,19 +966,20 @@ pub fn temporary_brep_transform(
     brep: &Brep,
     other: &Brep,
 ) -> Result<TemporaryBrepShift> {
-    // get parts bbox
-    let bbox1 = ignore_failure(qbrep::calculate_bounding_box(
-        primary_kernel,
-        brep,
-        BoundingBoxOptions::default(),
-    ))?
-    .unwrap_or_default();
-    let bbox2 = ignore_failure(qbrep::calculate_bounding_box(
-        other_kernel,
-        other,
-        BoundingBoxOptions::default(),
-    ))?
-    .unwrap_or_default();
+    // A failed box must not select a shift from an unwritten extent.
+    let checked = primary_kernel.fixes.boolean_temporary_transform_statuses;
+    let first = qbrep::calculate_bounding_box(primary_kernel, brep, BoundingBoxOptions::default());
+    let bbox1 = if checked {
+        first?
+    } else {
+        ignore_failure(first)?.unwrap_or_default()
+    };
+    let second = qbrep::calculate_bounding_box(other_kernel, other, BoundingBoxOptions::default());
+    let bbox2 = if checked {
+        second?
+    } else {
+        ignore_failure(second)?.unwrap_or_default()
+    };
     let bbox = bbox1.union(&bbox2);
 
     // when bbox is very large - translate its center to the origin
@@ -1050,6 +1052,32 @@ impl TemporaryBrepShift {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_483_boxes_fail_before_temporary_translation() {
+        let mut k = Kernel::default();
+        let mut bad =
+            crate::primitive::api_primitives::create_box(&mut k, Vec3::ZERO, 1.0, 1.0, 1.0)
+                .unwrap();
+        let edge = bad.edges().ids().next().unwrap();
+        bad.edge_mut(edge).unwrap().curve = Some(crate::curve::curve::Curve::from(
+            crate::nurbs::b_spline_curve::BSplineCurve::default(),
+        ));
+        let mut good = Brep::new();
+        good.set_locked_bounding_box(Some(crate::geom::extent3d::Extent3d::from_point(
+            Vec3::new(2000.0, 0.0, 0.0),
+        )));
+        assert!(temporary_brep_transform(&k, &k, &bad, &good).is_ok());
+        k.fixes.boolean_temporary_transform_statuses = true;
+        let expected =
+            qbrep::calculate_bounding_box(&k, &bad, BoundingBoxOptions::default()).unwrap_err();
+        for (first, second) in [(&bad, &good), (&good, &bad)] {
+            assert_eq!(
+                temporary_brep_transform(&k, &k, first, second).unwrap_err(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn temporary_translation_reports_restore_failure() {
