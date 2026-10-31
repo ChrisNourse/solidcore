@@ -1521,6 +1521,22 @@ fn run_rust(i: &Inputs) -> Result<Output, HarnessError> {
         Ok(x) => x,
         Err(o) => return Ok(o),
     };
+    // an input the FFI refuses is a harness error on both sides (PR #502's convention):
+    // the shim never runs it, so the Rust side must not either. Nightly fuzz case
+    // fuzz00208 mutated a `copy`'s `repeat` to 2^32: the FFI refuses more than
+    // `MAX_COPIES` for the C++ side, while this side copied the faces 2^32 times and ran
+    // past the fuzz time limit. The checks see the same input vector as the C++ side
+    // (after the UB-165 rejection, as `run_cpp` orders them) and this side's own B-rep
+    // counts; a raw-knot merge builds its plane face in `rust_record` (no B-rep here), so
+    // its arguments are left to `resolve`'s checks, as before.
+    if !ub_165(&r)? {
+        let (op, path, input) = encode(&r)?;
+        let brep_op = matches!(op, Op::Glue | Op::Copy | Op::MergeSelf);
+        let counts = built.as_ref().map(crate::own_builder::counts);
+        if let Some(c) = counts.or((!brep_op).then_some([0; 10])) {
+            ffi::validate(op, &path, &input, &c).map_err(|e| harness(e.to_string()))?;
+        }
+    }
     match rust_record(&mut k, &r, built) {
         Ok(v) => Ok(Output::new().values("out", v)),
         Err(Fail::Deferred(o)) => Ok(*o),
@@ -2083,6 +2099,31 @@ impl UnitDiff for Runner {
                 )?;
             }
         }
+        // #1869: copies through the merge whose new edges and faces get other ids than
+        // their sources (with a fresh records map, their copy notifications need the
+        // default record every upstream SmTopology object has)
+        for (file, n, repeat) in [
+            ("box_with_large_fillet.smb", 1, 1),
+            ("box_with_large_fillet.smb", 3, 1),
+            ("cone.smb", 1, 1),
+            ("Mouse.smb", 2, 1),
+            ("plane_square.smb", 2, 2),
+            ("disk.smb", 2, 3),
+        ] {
+            push(
+                &mut v,
+                format!("copy_merge_n{n}_repeat{repeat}_{file}"),
+                &Inputs::Copy {
+                    brep: BrepIn::File {
+                        file: file.to_string(),
+                        rebuild: false,
+                    },
+                    n,
+                    merge: true,
+                    repeat,
+                },
+            )?;
+        }
         // #1628: copies into a destination that already has faces
         for file in ["plane_square.smb", "disk.smb", "plane_circ.smb"] {
             for repeat in [2, 3] {
@@ -2356,5 +2397,39 @@ impl UnitDiff for Runner {
             }
         }
         Ok(v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nightly fuzz case `topology.brep_p7/fuzz00208` (run 41040730716): a `copy` with
+    /// `repeat` 2^32. The FFI refuses more than `MAX_COPIES` copies for the C++ side, and
+    /// the Rust side must be refused the same way instead of copying the faces 2^32 times.
+    #[test]
+    fn huge_copy_repeat_is_refused_on_both_sides() {
+        let v = serde_json::json!({
+            "brep": {"kind": "file", "file": "plane_square.smb", "rebuild": false},
+            "merge": true, "n": 2, "op": "copy", "repeat": 4_294_967_296_u64
+        });
+        let i: Inputs = serde_json::from_value(v).unwrap();
+        let cpp = run_cpp(&i).unwrap_err().to_string();
+        let rust = run_rust(&i).unwrap_err().to_string();
+        assert_eq!(cpp, "c++: invalid argument: bad index/count 4294967296");
+        assert_eq!(rust, cpp.trim_start_matches("c++: "));
+    }
+
+    /// The largest `repeat` the FFI accepts still runs on both sides.
+    #[test]
+    fn max_copy_repeat_runs_on_both_sides() {
+        let v = serde_json::json!({
+            "brep": {"kind": "file", "file": "plane_square.smb", "rebuild": false},
+            "merge": false, "n": 1, "op": "copy", "repeat": ffi::MAX_COPIES
+        });
+        let i: Inputs = serde_json::from_value(v).unwrap();
+        let cpp = run_cpp(&i).unwrap();
+        let rust = run_rust(&i).unwrap();
+        assert!(crate::compare(&cpp, &rust, &[]).mismatches.is_empty());
     }
 }
