@@ -98,20 +98,19 @@ fn removed(d: f64) -> f64 {
     (triangle - 0.5 * R * R * (b - b.sin())) * H
 }
 
-/// The knife edge of the part (mirrored when `s` is -1) chamfered `d`: its volume, or the
-/// chamfer's failure.
-fn chamfer(best_dot: bool, s: f64, d: f64) -> solidcore::Result<f64> {
+/// The knife edge of the part (mirrored when `s` is -1) chamfered `d`: its volume, or why
+/// it failed (the chamfer's error, or a body that is not a solid).
+fn chamfer(best_dot: bool, s: f64, d: f64) -> Result<f64, String> {
     let mut k = Kernel::default();
     k.fixes.fillet_knife_edge_rounds = true;
     k.fixes.fillet_trim_inside_by_best_dot = best_dot;
     let mut b = part(&mut k, s);
     let e = knife_edge(&k, &b, s);
     // the linear section (`xsect_type` 0) on the ball of radius d
-    fillet_edges(&mut k, &mut b, &[e], d, 0, 1, 1.0)?;
-    assert!(
-        is_manifold_solid(&b).unwrap(),
-        "d {d}, side {s}: not a solid"
-    );
+    fillet_edges(&mut k, &mut b, &[e], d, 0, 1, 1.0).map_err(|e| format!("{e:?}"))?;
+    if !is_manifold_solid(&b).unwrap() {
+        return Err("not a solid".to_string());
+    }
     Ok(volume(&k, &mut b))
 }
 
@@ -123,7 +122,7 @@ fn wr_611_steep_knife_edge_chamfers_trim_their_face() {
     for d in [0.5, 0.8, 1.0, 2.0, 5.0] {
         for s in [1.0, -1.0] {
             let v = chamfer(true, s, d)
-                .unwrap_or_else(|e| panic!("d {d}, side {s}: the chamfer failed: {e:?}"));
+                .unwrap_or_else(|e| panic!("d {d}, side {s}: the chamfer failed: {e}"));
             let want = before - removed(d);
             assert!(
                 (v - want).abs() <= 1e-9 * want,
@@ -134,13 +133,16 @@ fn wr_611_steep_knife_edge_chamfers_trim_their_face() {
 }
 
 /// Without the opt-in the 0.5 and 0.8 chamfers (meeting the flat face past 78 degrees)
-/// trim nothing and fail; from d 1 they build either way.
+/// trim nothing: the chamfer fails or leaves a body that is not a solid. From d 1 they
+/// build either way.
 #[test]
 fn wr_611_without_the_opt_in_steep_chamfers_fail() {
     for s in [1.0, -1.0] {
         for d in [0.5, 0.8] {
             assert!(chamfer(false, s, d).is_err(), "d {d}, side {s}");
         }
-        assert!(chamfer(false, s, 2.0).is_ok(), "d 2, side {s}");
+        if let Err(e) = chamfer(false, s, 2.0) {
+            panic!("d 2, side {s}: {e}");
+        }
     }
 }
