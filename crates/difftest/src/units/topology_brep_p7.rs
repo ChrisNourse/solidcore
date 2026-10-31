@@ -1354,7 +1354,18 @@ fn rust_record(k: &mut Kernel, i: &Inputs, built: Option<Brep>) -> Record {
                     context: None,
                     key_of: &key_of,
                 };
-                let r = p7::copy_faces(k, &mut b, &faces, &mut dest, *merge, &this_face, &mut env);
+                // (one naming for both B-reps, as the C++ shim's caller has none:
+                // `copy_faces` names the source apart for the copy)
+                let r = p7::copy_faces(
+                    k,
+                    &mut b,
+                    &faces,
+                    &mut dest,
+                    *merge,
+                    &this_face,
+                    &mut env,
+                    &key_of,
+                );
                 // (a face that could not be copied makes upstream's status SM_ERR; the
                 // copies made are kept)
                 let s = match &r {

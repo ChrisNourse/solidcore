@@ -48,7 +48,9 @@ fn copy_tube(k: &mut Kernel, dest: &mut Brep, z: f64) -> Result<(Vec<FaceId>, bo
     let mut env = state.env(None);
     let key_of = env.key_of;
     let this_face = |f| key_of(EntityRef::Face(f));
-    copy_faces(k, &mut piece, &faces, dest, false, &this_face, &mut env)
+    copy_faces(
+        k, &mut piece, &faces, dest, false, &this_face, &mut env, &key_of,
+    )
 }
 
 #[test]

@@ -1931,7 +1931,17 @@ fn copy_faces(
     state.seed(src);
     let mut env = state.env(None);
     let face_ref = |f: FaceId| crate::topology::loopuse::notify_ref(EntityRef::Face(f));
-    crate::topology::brep::p7::copy_faces(k, src, faces, dest, use_merge, &face_ref, &mut env)
+    // both B-reps under `notify_ref`: `copy_faces` names the source apart for the copy
+    crate::topology::brep::p7::copy_faces(
+        k,
+        src,
+        faces,
+        dest,
+        use_merge,
+        &face_ref,
+        &mut env,
+        &crate::topology::loopuse::notify_ref,
+    )
 }
 
 /// `SmBrep::RemoveFaces`.
