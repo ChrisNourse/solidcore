@@ -23,6 +23,7 @@
 #include <SmApiBrep.h>
 #include <SmApiGeneral.h>
 #include <SmApiPrimitives.h>
+#include <SmApiQueries.h>
 #include <SmAttribute.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
@@ -31,6 +32,7 @@
 #include <SmCylinder.h>
 #include <SmEdge.h>
 #include <SmEdgeuse.h>
+#include <SmGap.h>
 #include <SmFace.h>
 #include <SmFaceuse.h>
 #include <SmLine.h>
@@ -43,6 +45,7 @@
 #include <SmRegion.h>
 #include <SmShell.h>
 #include <SmVertex.h>
+#include <SmVertexuse.h>
 #include <nurbs.h>
 #include <algorithm>
 #include <array>
@@ -410,8 +413,29 @@ int curve_kind(SmCurve* curve) {
 }
 struct Block {
     bool present = false;
-    std::vector<double> integers, values;
+    std::vector<double> integers, values, caches;
 };
+// The lazily filled topology caches the Rust purity check also sees (its whole B-rep
+// state): per vertex use (GetVertexuses order) the vertex/edge gap's init flag and edge
+// parameter and the vertex/face gap's init flag and face UV, per edge use (GetEdgeuses
+// order) the max edge/face gap's init flag. Read through the const getters only when
+// already initialised, so observing never fills a cache.
+void put_caches(std::vector<double>& out, SmBrep* brep,
+                const SmTArray<SmEdgeuse*>& edgeuses) {
+    SmTArray<SmVertexuse*> uses;
+    brep->GetVertexuses(uses);
+    if ((size_t)uses.GetSize() + edgeuses.GetSize() > max_output/64)
+        throw std::length_error("native snapshot cache budget");
+    for (ULONG i=0; i<uses.GetSize(); ++i) {
+        SmVertexuse* vu = uses[i];
+        SmVertexEdgeGap* edge = vu->IsVertexEdgeGapInit() ? vu->GetVertexEdgeGap() : nullptr;
+        SmVertexFaceGap* face = vu->IsVertexFaceGapInit() ? vu->GetVertexFaceGap() : nullptr;
+        out.insert(out.end(), {edge ? 1.0 : 0.0, edge ? edge->GetEdgeT() : 0.0,
+            face ? 1.0 : 0.0, face ? face->GetFaceUV().x : 0.0, face ? face->GetFaceUV().y : 0.0});
+    }
+    for (ULONG i=0; i<edgeuses.GetSize(); ++i)
+        out.push_back(edgeuses[i]->IsMaxEdgeFaceGapInit() ? 1.0 : 0.0);
+}
 template<class T> void put_ids(std::vector<double>& out, const SmTArray<T*>& list,
                               const SmTArray<T*>& traversal) {
     out.push_back((double)list.GetSize());
@@ -519,6 +543,7 @@ Block snapshot(SmBrep* brep) {
         put_point(vals,vertices[i]->GetPoint());
         vals.push_back((double)vertices[i]->GetTolerance());
     }
+    put_caches(block.caches,brep,edgeuses);
     return block;
 }
 void put_block(std::vector<double>& out, const Block& block) {
@@ -530,6 +555,10 @@ void put_block(std::vector<double>& out, const Block& block) {
     out.insert(out.end(),block.integers.begin(),block.integers.end());
     out.push_back((double)block.values.size());
     out.insert(out.end(),block.values.begin(),block.values.end());
+    if (block.caches.size() + out.size() + 1 > max_output)
+        throw std::length_error("native snapshot output budget");
+    out.push_back((double)block.caches.size());
+    out.insert(out.end(),block.caches.begin(),block.caches.end());
 }
 
 // Attributed cases (#1462): every source face (GetFaces order) and edge (GetEdges order)
@@ -612,7 +641,61 @@ std::vector<double> observe_selectors(const SmTArray<SmFace*>& selectors, SmBrep
     return result;
 }
 
-void run(const Program& p, std::vector<double>& out) {
+// The volume queries of the measured entry point (sc_offset_offset_executive_p2_eval_measured),
+// at the accuracy the Rust side's tests use.
+constexpr double volume_accuracy = 1e-6;
+
+// `SmApiBrepComputeVolume(brep)` as `status volume` (the native status; volume 0 on
+// failure); `-1 0` for no B-rep.
+void put_volume(std::vector<double>& out, SmBrep* brep) {
+    if (!brep) { out.insert(out.end(), {-1.0, 0.0}); return; }
+    double volume = 0.0;
+    SmApiStatus status = SmApiBrepComputeVolume(brep, volume_accuracy, volume);
+    out.push_back((double)status);
+    out.push_back(status == SM_SUCCESS ? volume : 0.0);
+}
+
+// The operand state a volume query can write (#1528), read without writing anything: per
+// edge use (`GetEdgeuses` order) `0` without UV trim curve (`GetUVTrimCurvePointer`), `2`
+// for one without NURB, else `1` then its first and last homogeneous control points
+// `x y w`; then per vertex use (`GetVertexuses` order) `0` when its vertex/face gap is not
+// initialised, else `1 gap u v`. Starts with the number of edge uses holding a trim curve.
+void put_operand_state(std::vector<double>& out, SmBrep* brep) {
+    if (!brep) return;
+    SmTArray<SmEdgeuse*> edgeuses;
+    SmTArray<SmVertexuse*> vertexuses;
+    brep->GetEdgeuses(edgeuses);
+    brep->GetVertexuses(vertexuses);
+    if ((size_t)edgeuses.GetSize() + vertexuses.GetSize() > max_output/16)
+        throw std::length_error("native operand state budget");
+    double trimmed = 0.0;
+    for (ULONG i=0; i<edgeuses.GetSize(); ++i)
+        if (edgeuses[i]->GetUVTrimCurvePointer()) trimmed += 1.0;
+    out.push_back(trimmed);
+    for (ULONG i=0; i<edgeuses.GetSize(); ++i) {
+        SmBSplineCurve* trim = edgeuses[i]->GetUVTrimCurvePointer();
+        const gw_CURVE* g = trim ? trim->GetGwNurbPointer() : nullptr;
+        if (!trim) { out.push_back(0.0); continue; }
+        if (!g) { out.push_back(2.0); continue; }
+        out.push_back(1.0);
+        for (gw_INDEX k : {(gw_INDEX)0, g->pol->n})
+            out.insert(out.end(), {g->pol->Pw[k].x, g->pol->Pw[k].y, g->pol->Pw[k].w});
+    }
+    for (ULONG i=0; i<vertexuses.GetSize(); ++i) {
+        SmVertexuse* vu = vertexuses[i];
+        if (!vu->IsVertexFaceGapInit()) { out.push_back(0.0); continue; }
+        const SmVertexFaceGap* gap = vu->GetVertexFaceGap();
+        SmPoint2d uv = gap->GetFaceUV();
+        out.insert(out.end(), {1.0, gap->GetLength(), uv.x, uv.y});
+    }
+}
+
+// `volume_query`: -1 none; 0 the result's volume after the call; 1 also the source's volume
+// queried on the operand before the call (#1528: a query that changes a later operation).
+// A measured snapshot ends with `operand_state... operand_len pre_status pre_volume
+// post_status post_volume`, the operand state read right after the (optional) query and
+// before the call (`put_operand_state`).
+void run(const Program& p, std::vector<double>& out, int volume_query) {
     SmContext& ctx = *SmApiGetOrCreateContext();
     BooleanRestore restore(ctx); // outlives all per-case B-rep destruction
     Allocations allocations(ctx);
@@ -622,6 +705,10 @@ void run(const Program& p, std::vector<double>& out) {
     SmTArray<SmFace*> source_faces, foreign_faces, selectors;
     SmTArray<const SmFace*> api_selectors;
     if (source && p.attributed >= 0) tag_source(source, ctx, (SmAttributeBehaviorType)p.attributed);
+    std::vector<double> pre_volume = {-1.0, 0.0};
+    if (volume_query == 1) { pre_volume.clear(); put_volume(pre_volume, source); }
+    std::vector<double> operand_state;
+    if (volume_query >= 0) put_operand_state(operand_state, source);
     if (source) source->GetFaces(source_faces);
     if (foreign) foreign->GetFaces(foreign_faces);
     for (const auto& selection : p.selections) {
@@ -710,6 +797,12 @@ void run(const Program& p, std::vector<double>& out) {
     put_block(out,snapshot(result));
     put_block(out,snapshot(offset));
     if (p.attributed >= 0) put_attributes(out, result);
+    if (volume_query >= 0) {
+        out.insert(out.end(), operand_state.begin(), operand_state.end());
+        out.push_back((double)operand_state.size());
+        out.insert(out.end(), pre_volume.begin(), pre_volume.end());
+        put_volume(out, result);
+    }
     // Executive destruction owns offset; then allocation scope reclaims every
     // remaining distinct B-rep (source/foreign/result/unreturned native working data).
     executive.reset();
@@ -717,16 +810,18 @@ void run(const Program& p, std::vector<double>& out) {
 }
 } // namespace
 
-SC_EXPORT int32_t sc_offset_offset_executive_p2_eval(
-    const double* input, int64_t input_len, double* out, int64_t cap, int64_t* out_len) {
-    if (!input || input_len < 0 || input_len > max_input || !out_len || cap < 0 || (cap && !out))
+namespace {
+int32_t eval_impl(const double* input, int64_t input_len, int volume_query, double* out,
+                  int64_t cap, int64_t* out_len) {
+    if (!input || input_len < 0 || input_len > max_input || !out_len || cap < 0 || (cap && !out)
+        || volume_query < -1 || volume_query > 1)
         return SC_ERR_ARG;
     try {
         SC_NATIVE_LOCK;
         Reader rd{input,input_len};
         Program p = read_program(rd);
         std::vector<double> result;
-        try { run(p,result); }
+        try { run(p,result,volume_query); }
         catch (const Rejected& rejected) { result = {-1,(double)rejected.status}; }
         if (result.size() > max_output) throw std::length_error("native output budget");
         return sc_copy_out(result.data(),(int64_t)result.size(),out,cap,out_len);
@@ -735,4 +830,17 @@ SC_EXPORT int32_t sc_offset_offset_executive_p2_eval(
     } catch (...) {
         return SC_ERR_EXCEPTION;
     }
+}
+} // namespace
+
+SC_EXPORT int32_t sc_offset_offset_executive_p2_eval(
+    const double* input, int64_t input_len, double* out, int64_t cap, int64_t* out_len) {
+    return eval_impl(input, input_len, -1, out, cap, out_len);
+}
+
+// The same call with the volume queries of `run`'s `volume_query` (-1, 0 or 1).
+SC_EXPORT int32_t sc_offset_offset_executive_p2_eval_measured(
+    const double* input, int64_t input_len, int32_t volume_query, double* out, int64_t cap,
+    int64_t* out_len) {
+    return eval_impl(input, input_len, volume_query, out, cap, out_len);
 }

@@ -59,6 +59,9 @@
 //! - **Sections at thirds.** [`BlendCurveCrossSectionFsg::at_thirds`] is the fork's
 //!   `m_bAtThirds` (tangency-labs/smlib `fd3b6a7`, not in SMLib at the pin; off unless
 //!   the executive's `SetBlendCurveAtThirds` is set, so the default is the pinned C++).
+//! - **Shared section.** The body of `CreateSurfaceFromCurves`' section loop is
+//!   `BlendCurveCrossSectionFsg::cross_section_through`, which (not upstream, WR-581)
+//!   `blend::fillet_solver::p2`'s revolved blend-curve section also builds from.
 //! - **Object model.** `SmConstantRadiusFS` is the co-ported [`ConstantRadiusAssistedFs`]
 //!   of `blend.fillet_custom_solver` (the members of `SmFilletSolver`,
 //!   `SmConstantRadiusFS` and `SmConstantRadiusAssistedFS` are the same), aliased as
@@ -562,8 +565,9 @@ fn face_surface(brep: &Brep, eu: EdgeuseId, op: &'static str) -> Result<(Surface
         .ok_or_else(|| SolidError::invalid_input(op, "edge use without face"))?;
     let s = face::surface(brep, f)?
         .ok_or_else(|| SolidError::invalid_input(op, "face without surface"))?;
-    // (the offset shares the face's surface: its owner is kept)
-    Ok((s.clone_keeping_owner(), SurfaceId::Face(f)))
+    // (the offset shares the face's surface, `m_pSurface(&rSurface)`: an exact copy,
+    // owner kept, without the copy constructor's knot fix-up)
+    Ok((s.clone_for_evaluation()?, SurfaceId::Face(f)))
 }
 
 /// `SmConstantRadiusFS(crContext, dThisApproxTol3d, dAngleTolerance,
@@ -1384,12 +1388,10 @@ impl ConstantDistanceFs {
             surface2_rail = Some(other_rail);
             let uv2 = self.surface2_guess(k, brep, other_rail, &mut surface1, uv, pnt)?;
 
-            let domain = self
-                .solver
-                .rail(other_rail)?
-                .base_surface()
-                .natural_uv_domain_with_nurb(k)?;
-            let size: Vec2 = self.solver.surface_extension_factor * domain.size();
+            let other_base = self.solver.rail(other_rail)?.base_surface();
+            let domain = other_base.natural_uv_domain_with_nurb(k)?;
+            // fork WR-609: and the trace's reach (0 without `fillet_trace_reaches_rails`)
+            let size: Vec2 = self.solver.domain_extension(k, Some(other_base), &domain)?;
 
             let n = guess_t.len();
             *interval_mut(intervals, n, OP)? =
@@ -2546,6 +2548,35 @@ impl CircularCrossSectionFsg {
         // some extra knots if needed.
         let knots = add_section_knots(rail1, rail2, knots, true, OP)?;
 
+        // Where the rails meet at an end of the fillet (a degenerate corner whose cross
+        // section is a point), both rails end at that one point: each rail is lifted
+        // from its own surface, and their ends differ by the model's accuracy, so the
+        // skinned surface came out close to singular there instead of exactly
+        // (tangency-labs/smlib@5fdefb9, WR-594).
+        if k.fixes.fillet_rails_meet_at_one_end_point {
+            for end in 0..2 {
+                let ivl = rail1.natural_interval();
+                let t = if end == 0 { ivl.min() } else { ivl.max() };
+                let end1 = rail1.evaluate_point(t)?;
+                let end2 = rail2.evaluate_point(t)?;
+                if end1.distance(end2) >= approx_tol_3d {
+                    continue;
+                }
+                let meet = (end1 + end2) / 2.0;
+                for rail in [&mut *rail1, &mut *rail2] {
+                    let idx = if end == 0 {
+                        0
+                    } else {
+                        rail.number_control_points()?
+                            .checked_sub(1)
+                            .ok_or_else(|| SolidError::sm_err(OP))?
+                    };
+                    let (_, w) = rail.control_point(ControlPointForm::EuclideanRational, idx)?;
+                    rail.set_control_point(ControlPointForm::EuclideanRational, idx, meet, w)?;
+                }
+            }
+        }
+
         // when center, rail1, and rail2 curves are parallel lines - NewSurf = RuledSurface
         // when center, rail1, and rail2 curves are arcs           - NewSurf = SurfaceOfRevolution
         // else                                                    - NewSurf = Skinned Surface
@@ -3022,6 +3053,25 @@ impl Default for BlendCurveCrossSectionFsg {
     }
 }
 
+/// Where a blend curve cross section reads its rail points' UV positions
+/// ([`BlendCurveCrossSectionFsg::cross_section_through`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SectionUv<'a> {
+    /// No UV curves (`pUV1` or `pUV2` `NULL`): no higher-order derivatives.
+    None,
+    /// The UV curves `pUV1`, `pUV2` at `t` (`CreateSurfaceFromCurves`).
+    Curves {
+        /// The rails' parameter.
+        t: f64,
+        /// The first rail's UV curve.
+        uv1: &'a BSplineCurve,
+        /// The second rail's UV curve.
+        uv2: &'a BSplineCurve,
+    },
+    /// The rail points' UV positions themselves (not upstream, WR-581).
+    Points(Point2, Point2),
+}
+
 /// A surface and its UV curve along a rail (`pSurf1`, `pUV1` of
 /// `SmBlendCurveCrossSectionFSG::CreateSurfaceFromCurves`).
 #[derive(Debug, Clone, Copy)]
@@ -3228,7 +3278,8 @@ impl BlendCurveCrossSectionFsg {
     }
 
     /// The blend curve cross section at `t` (the body of the loops of
-    /// `CreateSurfaceFromCurves`).
+    /// `CreateSurfaceFromCurves`): [`BlendCurveCrossSectionFsg::cross_section_through`]
+    /// the centre line's and the rails' points at `t`, with the UV curves' points at `t`.
     fn cross_section_at(
         &self,
         k: &Kernel,
@@ -3248,6 +3299,44 @@ impl BlendCurveCrossSectionFsg {
             .ok_or_else(|| SolidError::sm_err(OP))?;
         let p1 = rail1.evaluate_point(t)?;
         let p2 = rail2.evaluate_point(t)?;
+        let uv = match (side1.uv_curve, side2.uv_curve) {
+            (Some(uv1), Some(uv2)) => SectionUv::Curves { t, uv1, uv2 },
+            _ => SectionUv::None,
+        };
+        self.cross_section_through(
+            k,
+            cent,
+            [p1, p2],
+            approx_tol_3d,
+            [side1.surface, side2.surface],
+            uv,
+        )
+    }
+
+    /// The blend curve cross section about `cent` from `p1` to `p2` (on the rails'
+    /// surfaces `surfaces`): the end tangents of the arc about `cent`, faired and scaled
+    /// by the blend scale, for continuity 2 or 3 with `uv` points also the second (and
+    /// third) directional derivatives of the surfaces along the dropped tangents; a
+    /// point curve where the points meet within `approx_tol_3d`. Shared by
+    /// `CreateSurfaceFromCurves` and (not upstream, WR-581) the revolved section of
+    /// `CalcTorusFilletGeom` (`blend::fillet_solver::p2`).
+    ///
+    /// # Errors
+    ///
+    /// `SM_ERR` for a zero radius or a zero or straight arc angle; `SM_ERR_INVALID_INPUT`
+    /// from `Unitize`; [`SolidError::InvalidInput`] for continuity above 1 with `uv`
+    /// points but a missing surface (upstream dereferences `NULL`); those of the curve
+    /// constructions and the surface queries.
+    pub(crate) fn cross_section_through(
+        &self,
+        k: &Kernel,
+        cent: Point3,
+        [p1, p2]: [Point3; 2],
+        approx_tol_3d: f64,
+        surfaces: [Option<&Surface>; 2],
+        uv: SectionUv<'_>,
+    ) -> Result<BSplineCurve> {
+        const OP: &str = OP_BLEND;
         let v1 = p1 - cent;
         let v2 = p2 - cent;
         if p1.distance(p2) < approx_tol_3d {
@@ -3314,16 +3403,23 @@ impl BlendCurveCrossSectionFsg {
 
         // Create a blend curve instead using tangent vectors of the curve
         let mut higher_order_vecs: Option<Vec<Vec3>> = None;
-        if let (true, Some(uv1_curve), Some(uv2_curve)) =
-            (self.continuity > 1, side1.uv_curve, side2.uv_curve)
-        {
+        if self.continuity > 1 && !matches!(uv, SectionUv::None) {
             let null = || SolidError::invalid_input(OP, "UV curves without their surfaces");
-            let surf1 = side1.surface.ok_or_else(null)?;
-            let surf2 = side2.surface.ok_or_else(null)?;
-            let uv_pnt1 = uv1_curve.evaluate_point(t)?;
-            let uv_pnt2 = uv2_curve.evaluate_point(t)?;
-            let uv1 = Point2::new(uv_pnt1.x, uv_pnt1.y);
-            let uv2 = Point2::new(uv_pnt2.x, uv_pnt2.y);
+            let [surf1, surf2] = surfaces;
+            let surf1 = surf1.ok_or_else(null)?;
+            let surf2 = surf2.ok_or_else(null)?;
+            let (uv1, uv2) = match uv {
+                SectionUv::Curves { t, uv1, uv2 } => {
+                    let uv_pnt1 = uv1.evaluate_point(t)?;
+                    let uv_pnt2 = uv2.evaluate_point(t)?;
+                    (
+                        Point2::new(uv_pnt1.x, uv_pnt1.y),
+                        Point2::new(uv_pnt2.x, uv_pnt2.y),
+                    )
+                }
+                SectionUv::Points(uv1, uv2) => (uv1, uv2),
+                SectionUv::None => return Err(SolidError::invalid_input(OP, "no UV points")),
+            };
             let drop1 = |s: &Surface, uv: Point2, v: Vec3| -> Result<Vec2> {
                 drop_vectors_at(k, s, uv, Side::Left, Side::Left, &[v])?
                     .first()
@@ -3733,6 +3829,31 @@ mod tests {
         let mut fs = fs;
         fs.set_fillet_trim_type(BoundaryTrimmingType::Bevel);
         assert_eq!(fs.trim_type, BoundaryTrimmingType::Bevel);
+    }
+
+    #[test]
+    fn failed_radius_law_keeps_both_offset_distances() {
+        let mut curve_based = CurveBasedFs::new(1e-6, 0.5, 0.03);
+        curve_based.solver = cr().solver;
+        let mut fs = VariableRadiusFs {
+            curve_based,
+            law: FilletLaw::new(FilletLawKind::Base),
+            law_orientation: false,
+            law_interval: Extent1d::from_min_max(0.0, 1.0),
+        };
+        let distances = |fs: &VariableRadiusFs| {
+            fs.curve_based
+                .solver
+                .surfaces
+                .each_ref()
+                .map(|s| s.as_ref().unwrap().surface.offset_distance())
+        };
+        let before = distances(&fs);
+        let mut point = TsectPnt::new();
+        point.user_doubles[0] = 0.5;
+        let expected = fs.law.evaluate(0.5, &fs.law_interval, false).unwrap_err();
+        assert_eq!(fs.setup_offset_values(&point).unwrap_err(), expected);
+        assert_eq!(distances(&fs), before);
     }
 
     #[test]
