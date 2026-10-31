@@ -88,11 +88,14 @@ pub(crate) use ray::solve_mutable_brep_point;
 pub(crate) use ray::PreparationRequest;
 pub use ray::RayPreparation;
 pub(crate) use ray::RaySurfaceContext;
-pub use ray::{BrepFaceServices, FaceCaches, LiveBrepObjects, SideObject, SidedFaceServices};
+pub use ray::{
+    BrepFaceServices, CurveFaceObject, CurveFaceServices, FaceCaches, LiveBrepObjects, SideObject,
+    SidedFaceServices,
+};
 
 use core::cell::OnceCell;
 
-use crate::error::{ignore_status, ignored, EntityRef, Result, SolidError};
+use crate::error::{ignore_status, ignored, native_failure, EntityRef, Result, SolidError};
 use crate::geom::attribute::{Attribute, AttributeValue, Behavior};
 use crate::geom::extent3d::Extent3d;
 use crate::geom::global_solver::{SolutionRequested, SolverOperation};
@@ -662,7 +665,9 @@ impl<'a> BrepQuery<'a> {
     /// # Errors
     ///
     /// `SM_ERR` when no ray finds a region; those of the boundary solve, the region list
-    /// and the classification load; [`SolidError::Unported`] from the ray fires.
+    /// and the classification load; errors of the ray fires that have no upstream
+    /// status ([`SolidError::Unported`], a port invariant, a stale id), which are not
+    /// treated as a missed ray.
     pub fn point_3d_classify(
         &self,
         k: &Kernel,
@@ -787,7 +792,7 @@ impl<'a> BrepQuery<'a> {
                     None,
                 )
             });
-            Ok(ignored(fired)?.map(|r| r.region))
+            Ok(native_failure(fired)?.map(|r| r.region))
         };
         let mut region = None;
         for (forward, backward) in CLASSIFY_RAYS {
@@ -1043,8 +1048,10 @@ impl<'a, 'b> BrepClassifier<'a, 'b> {
 // ---- SM_API surface evaluation ------------------------------------------------------
 
 /// The input checks the three evaluation entry points share: a surface, and a
-/// parameter inside its natural domain (bounds included).
+/// parameter inside its natural domain (bounds included; `GetNaturalUVDomain`, which
+/// makes a lazy analytic's missing NURB).
 fn checked_surface<'s>(
+    k: &Kernel,
     surface: Option<&'s Surface>,
     uv: Point2,
     op: &'static str,
@@ -1054,8 +1061,7 @@ fn checked_surface<'s>(
     };
 
     // Negated in-range test so a NaN parameter is rejected too.
-    // (kernel-free: a lazy analytic answers its NURB-less base's empty domain)
-    let domain = surface.natural_uv_domain_if_built();
+    let domain = surface.natural_uv_domain_with_nurb(k)?;
     let (lo, hi) = (domain.min(), domain.max());
     if !(uv.x >= lo.x && uv.x <= hi.x && uv.y >= lo.y && uv.y <= hi.y) {
         return Err(SolidError::invalid_input(
@@ -1073,7 +1079,7 @@ fn checked_surface<'s>(
 /// [`SolidError::InvalidInput`] without a surface or for a parameter outside (or NaN
 /// against) the surface's natural domain; those of [`Surface::evaluate_point`].
 pub fn evaluate_surface_point(k: &Kernel, surface: Option<&Surface>, uv: Point2) -> Result<Point3> {
-    checked_surface(surface, uv, OP_EVAL_POINT)?.evaluate_point(k, uv)
+    checked_surface(k, surface, uv, OP_EVAL_POINT)?.evaluate_point(k, uv)
 }
 
 /// `SmApiEvaluateSurfaceNormal`: the unit normal of `surface` at `uv`, from the upper
@@ -1084,7 +1090,7 @@ pub fn evaluate_surface_point(k: &Kernel, surface: Option<&Surface>, uv: Point2)
 /// Those of [`evaluate_surface_point`]'s input checks; those of
 /// [`Surface::evaluate_normal`].
 pub fn evaluate_surface_normal(k: &Kernel, surface: Option<&Surface>, uv: Point2) -> Result<Vec3> {
-    checked_surface(surface, uv, OP_EVAL_NORMAL)?.evaluate_normal(k, uv, Side::Left, Side::Left)
+    checked_surface(k, surface, uv, OP_EVAL_NORMAL)?.evaluate_normal(k, uv, Side::Left, Side::Left)
 }
 
 /// `SmApiEvaluateSurfaceDerivatives`: the point and first derivatives `(P, Du, Dv)` of
@@ -1100,7 +1106,7 @@ pub fn evaluate_surface_derivatives(
     surface: Option<&Surface>,
     uv: Point2,
 ) -> Result<(Point3, Vec3, Vec3)> {
-    checked_surface(surface, uv, OP_EVAL_DERIVS)?.evaluate_1st_derivatives(k, uv, true, true)
+    checked_surface(k, surface, uv, OP_EVAL_DERIVS)?.evaluate_1st_derivatives(k, uv, true, true)
 }
 
 // ---- polygon decimation attributes ---------------------------------------------------
