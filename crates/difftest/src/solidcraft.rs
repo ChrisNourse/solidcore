@@ -1429,6 +1429,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         }
         "delete_vertex_joins_seam_iso_curve" => &mut k.fixes.delete_vertex_joins_seam_iso_curve,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
+        "fillet_cleanup_removes_input_slits" => &mut k.fixes.fillet_cleanup_removes_input_slits,
         "cover_wraps_across_closed_seam" => &mut k.fixes.cover_wraps_across_closed_seam,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
@@ -1460,7 +1461,11 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
         "fillet_3x2_mixed_concave_side_edge" => &mut k.fixes.fillet_3x2_mixed_concave_side_edge,
         "fillet_3x2_tangent_side_edge_roles" => &mut k.fixes.fillet_3x2_tangent_side_edge_roles,
+        "fillet_nx1_tangent_side_edge_same_convexity" => {
+            &mut k.fixes.fillet_nx1_tangent_side_edge_same_convexity
+        }
         "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
+        "fillet_rail_end_on_continued_surface" => &mut k.fixes.fillet_rail_end_on_continued_surface,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
