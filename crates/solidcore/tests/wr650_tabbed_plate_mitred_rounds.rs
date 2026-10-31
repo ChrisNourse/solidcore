@@ -97,10 +97,10 @@ fn area(da: f64, dt: f64) -> f64 {
 /// The volume the r 0.5 rounds take off, SolidCraft's integral over the round's section.
 fn want_removed() -> f64 {
     let n = 8192;
-    let dphi = (PI / 2.0) / n as f64;
+    let dphi = (PI / 2.0) / f64::from(n);
     (0..n)
         .map(|i| {
-            let phi = (i as f64 + 0.5) * dphi;
+            let phi = (f64::from(i) + 0.5) * dphi;
             let d = R * (1.0 - phi.cos());
             (area(0.0, 0.0) - area(d, d)) * R * phi.cos() * dphi
         })
@@ -131,7 +131,7 @@ fn top_edges(k: &Kernel, b: &Brep) -> Vec<EdgeId> {
         let curve = edge::curve(b, e).unwrap().unwrap();
         let ivl = edge::interval(b, e).unwrap();
         (0..=4000).any(|i| {
-            let t = ivl.min() + (ivl.max() - ivl.min()) * i as f64 / 4000.0;
+            let t = ivl.min() + (ivl.max() - ivl.min()) * f64::from(i) / 4000.0;
             (curve.evaluate_point(k, t).unwrap() - p).length() < 0.01
         })
     };
