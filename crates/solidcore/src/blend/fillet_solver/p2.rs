@@ -68,7 +68,10 @@
 //!   base surface past both ends (`run_side_edge_on_along_its_line`, the fork's
 //!   tangency-labs/smlib@6e77631). With `fixes.fillet_run_on_past_far_end_only` too, past
 //!   the end away from the filleted edge's vertex only (WR-643, the fork's
-//!   tangency-labs/smlib@7224896).
+//!   tangency-labs/smlib@7224896). With `fixes.fillet_run_on_bspline_trims` too, a widened
+//!   side edge's B-spline UV trim (its local copy) evaluates out of bounds, so it runs on
+//!   along its line as a line trim does instead of clamping to its ends
+//!   (`continue_bspline_trim_past_its_ends`, WR-654, #1981).
 
 use crate::blend::fillet_custom_solver::OffsetSurface;
 use crate::blend::fillet_executive::p3::ErrorInfo;
@@ -518,7 +521,7 @@ fn bspline_part(curve: &Curve) -> Result<&BSplineCurve> {
 /// side edge use's parameter interval (`intervals[0]`) past both ends when the side
 /// edge is a line, its UV trim curve is linear and the rail's base surface is planar:
 /// by the trace's reach or the extension factor times the edge's length, whichever is
-/// larger, in the UV trim curve's parameters.
+/// larger, in the UV trim curve's parameters. Returns whether it widened the interval.
 fn run_side_edge_on_along_its_line(
     k: &Kernel,
     b: &Brep,
@@ -527,15 +530,20 @@ fn run_side_edge_on_along_its_line(
     base: &Surface,
     solver: &FilletSolver,
     intervals: &mut ExtentNd,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(side_3d) = edge::curve(b, side_edge)?.cloned() else {
-        return Ok(());
+        return Ok(false);
     };
+    // The fork's tangency-labs/smlib@779cb9b: so does a straight side edge on a cylinder or
+    // cone, a ruling of it (its UV trim a line): the surface continues as itself past its
+    // domain (`offset_extension_as_itself`), along that line. A closed rim's seam is one: a
+    // disc's rim rounded past its 2 mm wall meets the seam's line below the wall.
     if !(side_3d.is_linear(k, EFF_ZERO, false)?.linear
         && uv_trim.is_linear(k, EFF_ZERO, false)?.linear
-        && base.is_planar(k, EFF_ZERO)?.is_planar)
+        && (base.is_planar(k, EFF_ZERO)?.is_planar
+            || matches!(base.kind(), crate::surface::surface::SurfaceKind::Cone(_))))
     {
-        return Ok(());
+        return Ok(false);
     }
     let edge_ivl = intervals
         .get(0)
@@ -561,7 +569,7 @@ fn run_side_edge_on_along_its_line(
                 0,
                 Extent1d::from_min_max(edge_ivl.min() - past, edge_ivl.max() + past),
             );
-            return Ok(());
+            return Ok(true);
         }
         // Opt-in (`fixes.fillet_run_on_past_far_end_only`, WR-643; the fork's
         // tangency-labs/smlib@7224896): only past the end away from the corner. The side
@@ -597,8 +605,25 @@ fn run_side_edge_on_along_its_line(
             0,
             Extent1d::from_min_max(edge_ivl.min() - before, edge_ivl.max() + after),
         );
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
+}
+
+/// Opt-in (`fixes.fillet_run_on_bspline_trims`, WR-654, #1981), not upstream: turns
+/// on out-of-bounds evaluation of a side edge's B-spline UV trim that
+/// [`run_side_edge_on_along_its_line`] widened, so the solve finds a point of its line
+/// past its ends, as on a line trim (whose evaluation is never clamped). An
+/// `SmBSplineCurve` clamps the parameter to its natural interval otherwise
+/// (`SmBSplineCurve::Evaluate`), and the exact degree-1 B-spline trims `SwapUV` mirrors
+/// onto a face kept the widened interval from reaching past the edge's ends. Other
+/// kinds are left as they are (a line trim runs on already). The caller passes its own
+/// copy of the trim; the edge use's stored trim is not touched.
+fn continue_bspline_trim_past_its_ends(uv_trim: &mut Curve) {
+    use crate::curve::curve::CurveKind;
+    if let CurveKind::BSpline(c) = uv_trim.kind_mut() {
+        c.set_out_of_bounds_enabled(true);
+    }
 }
 
 fn check_uv_bspline_kind(c: &Curve) -> Result<()> {
@@ -806,7 +831,11 @@ impl FilletSolver {
 
         // CreateConePatch() makes a STEP-parameterized cone,
         // we go the other way: u along the edge, v around the fillet surface.
-        ignore_status(cone_patch.swap_uv())?;
+        // fork 66b02de passes this on (SER)
+        ignore_status(crate::error::passed_on(
+            cone_patch.swap_uv(),
+            k.fixes.fillet_statuses_pass_on,
+        )?)?;
 
         // Copy pConePatch, when possible as an analytic surface
         let cylinder = cone_patch.copy_and_add_analytics(k)?;
@@ -955,7 +984,11 @@ impl FilletSolver {
         step_domain = Extent2d::from_points(step_domain.min, uv_max);
         cone.adjust_step_uv_domain(k, &step_domain)?;
         let mut cone = Surface::from(cone);
-        ignore_status(cone.swap_uv(k))?;
+        // fork 66b02de passes this on (SER)
+        ignore_status(crate::error::passed_on(
+            cone.swap_uv(k),
+            k.fixes.fillet_statuses_pass_on,
+        )?)?;
 
         let uv_domain = cone.natural_uv_domain_with_nurb(k)?;
         let ivl = Extent1d::from_min_max(uv_domain.min.x, uv_domain.max.x);
@@ -1226,7 +1259,11 @@ impl FilletSolver {
         }
 
         // CCWAngleBetween status ignored upstream: dSpanAng stays 0 on a failure
-        let mut span_ang = match axis_of_revolution.ccw_angle_between(vec, end_vec) {
+        // fork 66b02de passes this on (SER)
+        let mut span_ang = match crate::error::passed_on(
+            axis_of_revolution.ccw_angle_between(vec, end_vec),
+            k.fixes.fillet_statuses_pass_on,
+        )? {
             Ok(a) => a,
             Err(e @ SolidError::Unported { .. }) => return Err(e),
             Err(_) => 0.0,
@@ -1345,7 +1382,11 @@ impl FilletSolver {
             cs.translate(-ref_frame.origin());
             cs.rotate_about_axis(PI, ref_frame.z_axis());
             cs.translate(ref_frame.origin());
-            ignore_status(arc.transform(&cs, None))?;
+            // fork 66b02de passes this on (SER)
+            ignore_status(crate::error::passed_on(
+                arc.transform(&cs, None),
+                k.fixes.fillet_statuses_pass_on,
+            )?)?;
         }
 
         // create surface of revolution
@@ -1746,7 +1787,7 @@ impl FilletSolver {
 
         // let edgeuse->Surface UV guess = edgeuse->UVTrimCurve(GuessEdgeParameter)
         get_or_create_uv_trim_curve(k, b, side_eu, false, false, true)?.status?;
-        let uv_trim = eu::uv_trim_curve(b, side_eu)?
+        let mut uv_trim = eu::uv_trim_curve(b, side_eu)?
             .0
             .cloned()
             .ok_or_else(|| invalid("no UV trim curve"))?;
@@ -1779,7 +1820,7 @@ impl FilletSolver {
         // from a first guess already on it.
         if k.fixes.fillet_trace_reaches_rails {
             if let Some(side_edge) = side_edge {
-                run_side_edge_on_along_its_line(
+                let widened = run_side_edge_on_along_its_line(
                     k,
                     b,
                     side_edge,
@@ -1788,6 +1829,13 @@ impl FilletSolver {
                     ops.solver(),
                     &mut intervals,
                 )?;
+                // Opt-in (`fixes.fillet_run_on_bspline_trims`, WR-654, #1981): a B-spline
+                // trim clamps to its ends, so the widened interval reached no point of
+                // its line past them; a line trim on the other wall did, and the two
+                // rails' ends at the side vertex fell apart.
+                if widened && k.fixes.fillet_run_on_bspline_trims {
+                    continue_bspline_trim_past_its_ends(&mut uv_trim);
+                }
             }
         }
         set_interval(
@@ -1891,7 +1939,11 @@ impl FilletSolver {
     /// `ops` meets rail `other_rail_index` of `other` on their common surface, solved
     /// from `uv_guess` with both solvers' equations ([`RailRailIntersectEnfo`]).
     /// Returns `rbFoundIntersection`; when found, both tsect points get their UV points
-    /// and further solution values.
+    /// and further solution values. `hold_end_radii` is the fork's `bHoldEndRadii`
+    /// (tangency-labs/smlib@465b62b): the variable radii are held at their end values
+    /// (`SmTemporaryRadiusChange`) only when it is set; upstream always holds them, so
+    /// callers pass `true` unless `fixes.fillet_retry_radius_as_first` is on and their
+    /// corner is not calculated as constant radius.
     ///
     /// # Errors
     ///
@@ -1913,6 +1965,7 @@ impl FilletSolver {
         other_rail_index: usize,
         tsect: &mut TsectPnt,
         other_tsect: &mut TsectPnt,
+        hold_end_radii: bool,
     ) -> Result<bool> {
         // check inputs
         if !has_surface(ops.solver(), 0)?
@@ -1962,10 +2015,13 @@ impl FilletSolver {
         // Temporarily replace the variable-radius functions with a constant. [Reg Iter:306]
         // `SmTemporaryRadiusChange::SetUp` does nothing unless the solver is an
         // `SmVariableRadiusFS` (`SM_CAST_PTR`), first for this solver, then the other.
+        // Fork tangency-labs/smlib@465b62b (`fixes.fillet_retry_radius_as_first`, WR-300):
+        // only where `hold_end_radii` (a corner calculated as constant radius, as the
+        // callers decide); `SmTemporaryRadiusChange(NULL, ..)` does nothing.
         let other_side_eu = other.solver().edgeuse(other_rail_index)?;
         let this_side_eu = ops.solver().edgeuse(rail_index)?;
         let temp_this = match (ops.variable_radius_mut(), other_side_eu) {
-            (Some(vrfs), Some(side)) => {
+            (Some(vrfs), Some(side)) if hold_end_radii => {
                 let target = brep.as_deref().ok_or_else(|| {
                     invalid("variable-radius RailRailIntersect requires target B-rep")
                 })?;
@@ -1979,7 +2035,7 @@ impl FilletSolver {
             _ => crate::blend::fillet_executive::p2::DirectTemporaryRadiusChange::default(),
         };
         let temp_other = match (other.variable_radius_mut(), this_side_eu) {
-            (Some(vrfs), Some(side)) => {
+            (Some(vrfs), Some(side)) if hold_end_radii => {
                 let Some(target) = brep.as_deref() else {
                     temp_this.revert(ops.variable_radius_mut());
                     return Err(invalid(
@@ -2249,7 +2305,11 @@ impl FilletSolver {
                 // edge's tolerance as zone tolerance (as `sm_TrimRail`, p1 notes).
                 let tk = edge_zone_kernel(k, edge::tolerance(pseudo.brep(), cross_section)?);
                 // Set the cross section curve interval (status ignored upstream)
-                ignore_status(cs_curve.trim(&tk, &mut trim_ivl, TrimMode::Notify))?;
+                // fork 66b02de passes this on (SER)
+                ignore_status(crate::error::passed_on(
+                    cs_curve.trim(&tk, &mut trim_ivl, TrimMode::Notify),
+                    k.fixes.fillet_statuses_pass_on,
+                )?)?;
                 if let Some(c) = pseudo.brep_mut().edge_mut(cross_section)?.curve.as_mut() {
                     *c = cs_curve.clone();
                 }
@@ -2261,7 +2321,11 @@ impl FilletSolver {
                     .ok_or_else(|| invalid("edge use without mate"))?;
                 for e_u in [prim, mate] {
                     if let Some(uv) = pseudo.brep_mut().edgeuse_mut(e_u)?.uv_trim_curve.as_mut() {
-                        ignore_status(uv.trim(&tk, &mut trim_ivl, TrimMode::Notify))?;
+                        // fork 66b02de passes this on (SER)
+                        ignore_status(crate::error::passed_on(
+                            uv.trim(&tk, &mut trim_ivl, TrimMode::Notify),
+                            k.fixes.fillet_statuses_pass_on,
+                        )?)?;
                     }
                 }
             }
@@ -3085,6 +3149,50 @@ mod tests {
         assert_eq!((lo, hi), (a - past, z + past));
     }
 
+    /// WR-654 (#1981): a side edge's degree-1 B-spline UV trim clamps the parameter to
+    /// its natural interval, so past its start it gives the start point, where a line
+    /// trim runs on; `continue_bspline_trim_past_its_ends` (what `RailEdgeuseIntersect`
+    /// applies to its copy of a widened trim with `fillet_run_on_bspline_trims`) makes it
+    /// run on along its line past both ends, and leaves its points inside and a line
+    /// trim as they were.
+    #[test]
+    fn wr654_widened_bspline_trim_runs_on_along_its_line() {
+        let k = Kernel::default();
+        let (b, side_eu) = edgeuse_with_uv_trim();
+        let stored = eu::uv_trim_curve(&b, side_eu).unwrap().0.unwrap().clone();
+        assert!(matches!(
+            stored.kind(),
+            crate::curve::curve::CurveKind::BSpline(_)
+        ));
+        let at = |c: &Curve, t: f64| c.evaluate_point(&k, t).unwrap();
+        // as stored (and without the flag): clamped to the trim's ends
+        assert_eq!(at(&stored, -0.5), Point3::new(0.0, 0.0, 0.0));
+        assert_eq!(at(&stored, 1.5), Point3::new(1.0, 0.0, 0.0));
+        let mut on = stored.clone();
+        continue_bspline_trim_past_its_ends(&mut on);
+        assert_eq!(at(&on, -0.5), Point3::new(-0.5, 0.0, 0.0));
+        assert_eq!(at(&on, 1.5), Point3::new(1.5, 0.0, 0.0));
+        for t in [0.0, 0.25, 1.0] {
+            assert_eq!(at(&on, t), at(&stored, t));
+        }
+        // the edge use's own trim is untouched
+        assert_eq!(
+            at(eu::uv_trim_curve(&b, side_eu).unwrap().0.unwrap(), -0.5),
+            Point3::new(0.0, 0.0, 0.0)
+        );
+        // a line trim runs on already and is left as it is
+        let ivl = Extent1d::from_min_max(0.0, 1.0);
+        let line = Curve::from(
+            line_segment(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0), &ivl).unwrap(),
+        );
+        let mut line_on = line.clone();
+        continue_bspline_trim_past_its_ends(&mut line_on);
+        for t in [-0.5, 0.5, 1.5] {
+            assert_eq!(at(&line_on, t), at(&line, t));
+        }
+        assert_eq!(at(&line, -0.5), Point3::new(-0.5, 0.0, 0.0));
+    }
+
     fn edgeuse_with_uv_trim() -> (Brep, EdgeuseId) {
         let mut b = Brep::new();
         let v0 = b.add_vertex(Point3::new(0.0, 0.0, 0.0)).unwrap();
@@ -3192,6 +3300,7 @@ mod tests {
                 0,
                 &mut tsect,
                 &mut other_tsect,
+                true,
             );
             assert_eq!(result, Err(invalid(reason)));
             assert_eq!(ops.extension_calls.get(), 0);
@@ -3220,6 +3329,7 @@ mod tests {
             0,
             &mut tsect,
             &mut other_tsect,
+            true,
         );
         assert_eq!(result, Err(sm_err()));
         assert_eq!(ops.extension_calls.get(), 1);

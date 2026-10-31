@@ -63,7 +63,7 @@ use crate::geom::attribute::AttributeStore;
 use crate::geom::context::{with_mark_lock, MarkType, ALL_MARKS};
 use crate::geom::extent2d::Extent2d;
 use crate::geom::object::{FaceKey, NotifyOperation, ObjectRef};
-use crate::heal::stitch::p1::{DefaultStitchCallback, Stitch};
+use crate::heal::stitch::p1::{BorrowedStitchEdits, DefaultStitchCallback, Stitch};
 use crate::heal::stitch::p2 as stitch;
 use crate::heal::stitch::p2::MinGapRequest;
 use crate::kernel::Kernel;
@@ -73,8 +73,9 @@ use crate::query::api_queries::{brep_is_manifold_solid, BrepRef};
 
 use crate::topology::brep::p1 as bp1;
 use crate::topology::brep::p3 as bp3;
-use crate::topology::brep::p4::{shrink_geometry, stitch_faces};
+use crate::topology::brep::p4::{shrink_geometry, stitch_faces_with_context};
 use crate::topology::brep::p7::{make_face_with_curves_with_kernel_context, FaceCurvesInput};
+use crate::topology::brep::p9::CurveIdentity;
 use crate::topology::proto_topology::p1::CopyBrepMap;
 
 #[cfg(test)]
@@ -244,13 +245,23 @@ pub fn offset_brep(
         notifications.attributes,
     )?;
     let original_key = original.key();
+    // Opt-in (WR-657): as the shell does with WR-578's opt-in, an offset of a solid that
+    // is no closed manifold solid is refused rather than returned (upstream hands back,
+    // e.g., the loop gaps of a box with three chamfers meeting at a corner, volume 0)
+    let refuse_broken = kernel.fixes.offset_closes_loop_gaps
+        && kernel.fixes.offset_splits_corner_vertices
+        && brep_is_manifold_solid(original)?;
     let mut executive = configured_executive(original, options);
+    executive.use_creator_tangency_tol(kernel);
     let mut result = collapse_offset_status(executive.do_solid_offset(
         kernel,
         Some(original),
         SolidOffsetOptions::default(),
         notifications,
     ))?;
+    if refuse_broken && !brep_is_manifold_solid(&result)? {
+        return Err(SolidError::sm_err(OP_OFFSET));
+    }
     // (not upstream) the attributes the notifications left on the result's objects
     attributes::finish_attributes(&mut result, original_key, notifications)?;
     Ok(result)
@@ -388,8 +399,38 @@ impl OffsetExecutive {
                 let mut stitch_tol_3d = tolerance / 10.0;
                 let mut ii = 0;
                 while ii < 4 && lamina > 0 {
-                    lamina =
-                        stitch_faces(kernel, &mut shell, stitch_tol_3d, None, false)?.lamina_edges;
+                    // pBrepShell->StitchFaces(dStitchTol3d): the glues notify the shell's
+                    // own objects, whose attributes the MergeBrep above left in the
+                    // caller's stores, so the stitch runs on those (#1973)
+                    let key_of = notifications.result_key_of;
+                    let curve_ref = notifications.result_curve_ref;
+                    let (records, attributes) =
+                        (&mut *notifications.records, &mut *notifications.attributes);
+                    lamina = crate::geom::context::Context::with_notification_context(
+                        kernel,
+                        |kernel, context| {
+                            let mut env = crate::topology::edge::NotifyEnv {
+                                records,
+                                attributes,
+                                context: Some(context),
+                                key_of,
+                            };
+                            let mut edits = BorrowedStitchEdits {
+                                env: &mut env,
+                                curve_identity: CurveIdentity::Legacy(curve_ref),
+                            };
+                            stitch_faces_with_context(
+                                kernel,
+                                &mut shell,
+                                stitch_tol_3d,
+                                None,
+                                false,
+                                None,
+                                Some(&mut edits),
+                            )
+                        },
+                    )??
+                    .lamina_edges;
                     stitch_tol_3d *= 10.0;
                     if stitch_tol_3d > options.offset.distance.abs() / 2.0 {
                         break;
@@ -429,6 +470,16 @@ impl OffsetExecutive {
             // broken body.
             if kernel.fixes.offset_extended_edges_mated
                 && options.offset.extend_convex_edges
+                && input_is_manifold
+                && !brep_is_manifold_solid(&shell)?
+            {
+                return Err(SolidError::sm_err(OP_SHELL));
+            }
+            // Opt-in (WR-657): likewise with the corners split, a shell of a solid that is
+            // no closed manifold solid is refused (a box's chamfer left open by an inset of
+            // its two sides' width, which the cavity meets along a line only)
+            if kernel.fixes.offset_closes_loop_gaps
+                && kernel.fixes.offset_splits_corner_vertices
                 && input_is_manifold
                 && !brep_is_manifold_solid(&shell)?
             {
@@ -890,7 +941,7 @@ impl OffsetExecutive {
             // (an inner loop's offset grown past the outer loop's) is rebuilt from the
             // stretches of its loops that bound it, before the merge sees it.
             if kernel.fixes.offset_resolve_crossing_loops {
-                self.resolve_crossing_loops(kernel, notifications)?;
+                self.resolve_crossing_loops(kernel, original, notifications)?;
             }
 
             let mut result = self.piecewise_merge(kernel, original, Some(&mut *notifications))?;
@@ -923,13 +974,54 @@ impl OffsetExecutive {
             } else {
                 crate::error::ignore_status(stitch::stitch_into_solid(kernel, &mut result))?;
             }
+            // Opt-in (WR-667; tangency-labs/smlib@37af643): an inset keeps the regions
+            // that are cavity, not every finite region (upstream's TODO here: "we will
+            // need to select regions to keep"). Where the body is no thicker than the
+            // wall, the offsets of a floor's two faces cross and the merge closes the
+            // region between them, touching the cavity's pieces along edges; kept, the
+            // cavity was no manifold solid and the shell failed (1001). (SER.)
+            let mut cavities = Vec::new();
+            let mut select = false;
+            if kernel.fixes.offset_keep_cavity_regions
+                && self.inset()
+                && self.operation() == OffsetOperation::SolidOffset
+            {
+                let infinite = result.infinite_region();
+                let regions = bp1::regions(&result, None)?;
+                let mut body_cache = None;
+                for region in regions {
+                    if Some(region) == infinite {
+                        continue;
+                    }
+                    if body_cache.is_none() {
+                        body_cache = Some(super::p1::make_original_brep_cache(kernel, original)?);
+                    }
+                    let cache = required(body_cache.as_ref(), OP_EXTENDED)?;
+                    let cavity = super::cavity::is_cavity_region(
+                        kernel,
+                        original,
+                        cache,
+                        &mut result,
+                        region,
+                        self.offset_distance(),
+                    )?;
+                    if cavity {
+                        cavities.push(region);
+                    } else {
+                        select = true;
+                    }
+                }
+                if cavities.is_empty() {
+                    select = false;
+                }
+            }
             // MakeManifold exists in p5, but its remaining metadata/topology
             // adapters must still propagate Unported even though native ignores
             // ordinary errors. Do not turn that partial path into empty success.
             if crate::error::ignored(crate::topology::brep::p5::make_manifold(
                 kernel,
                 &mut result,
-                None,
+                select.then_some(cavities.as_slice()),
                 false,
             ))?
             .is_some()
@@ -1702,6 +1794,7 @@ fn run_shell_offset(
     notifications: &mut OffsetNotifications<'_>,
 ) -> Result<Brep> {
     let mut executive = configured_shell_executive(original, options, faces);
+    executive.use_creator_tangency_tol(kernel);
     // Unlike offset_brep, shelling must not collapse ordinary inner statuses.
     executive.do_solid_offset(
         kernel,
@@ -4636,7 +4729,7 @@ mod tests {
             key_of: &result_key,
         };
         bp3::merge_brep(k, &mut env, &mut sheet, &other, &copy_key, None, None, true).unwrap();
-        stitch_faces(k, &mut sheet, 1.0e-5, None, false).unwrap();
+        crate::topology::brep::p4::stitch_faces(k, &mut sheet, 1.0e-5, None, false).unwrap();
         sheet.set_key(original_key(EntityRef::Brep(BrepId::from_index(0))).key);
         sheet
     }

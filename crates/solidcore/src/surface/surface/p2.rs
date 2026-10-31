@@ -229,7 +229,10 @@ use crate::curve::curve::p7::PropertyAnalysisOptions;
 use crate::curve::curve::p8::CurveIntersectOptions;
 use crate::curve::curve::{Curve, CurvePropertyType};
 use crate::curve::line::Line;
-use crate::error::{ignore_status, EntityRef, Result, SolidError, SM_ERR};
+use crate::error::{
+    ignore_status, EntityRef, Result, SolidError, SM_ERR, SM_ERR_NOT_WITHIN_TOLERANCE,
+    SM_ERR_OUTSIDE_OF_DOMAIN,
+};
 use crate::geom::a_object::{self, AObject, CacheStore};
 use crate::geom::assert_array::labels::DERIV_SURF_DEFINITION_TYPE;
 use crate::geom::assert_array::{AssertArray, AssertReport, ObjectKey, ReportSpec};
@@ -1354,7 +1357,7 @@ impl Surface {
 
     /// The concrete kind: once a `const` query made a cone's, sphere's, torus's or
     /// surface of revolution's missing NURB ([`Surface::kind_with_nurb`]), the made kind
-    /// kept on this surface ([`MadeKindSlot`]), as upstream keeps the made NURB on the
+    /// kept on this surface (`MadeKindSlot`), as upstream keeps the made NURB on the
     /// object.
     #[must_use]
     pub fn kind(&self) -> &SurfaceKind {
@@ -1390,7 +1393,7 @@ impl Surface {
     /// method): this surface's kind when it is not analytic or has its NURB, else the
     /// kind with the NURB its virtual `MakeNurb` makes (status ignored, as upstream: a
     /// NURB that cannot be made stays missing), made once on an exact copy and kept on
-    /// this surface ([`MadeKindSlot`]; a plane's and an extrusion's NURB in their own
+    /// this surface (`MadeKindSlot`; a plane's and an extrusion's NURB in their own
     /// NURB slot), so that [`Surface::kind`] answers it from then on, as upstream keeps
     /// it on the object.
     ///
@@ -2390,6 +2393,24 @@ impl Surface {
         }
     }
 
+    /// Whether an analytic [`Self::step_inversion`] answered
+    /// (`SmSurface::STEPInversionAnswered`, the SolidCraft fork's tangency-labs/smlib
+    /// dfc7cb6): it succeeded, or, with
+    /// [`UpstreamFixes::analytic_inversion_answers_apart`](crate::kernel::UpstreamFixes::analytic_inversion_answers_apart),
+    /// returned `SM_ERR_NOT_WITHIN_TOLERANCE` (the point is off the surface) or
+    /// `SM_ERR_OUTSIDE_OF_DOMAIN` (outside a surface of revolution's sweep). Any other
+    /// status is a failure.
+    #[must_use]
+    pub fn step_inversion_answered<T>(status: &Result<T>) -> bool {
+        match status {
+            Ok(_) => true,
+            Err(SolidError::Upstream { code, .. }) => {
+                *code == SM_ERR_NOT_WITHIN_TOLERANCE || *code == SM_ERR_OUTSIDE_OF_DOMAIN
+            }
+            Err(_) => false,
+        }
+    }
+
     /// The parameter of `point_on_surf` in `anal_domain` and its location
     /// (`STEPInversion`).
     ///
@@ -2423,9 +2444,28 @@ impl Surface {
             // m_vAnalUVDomain (only the non-planar generator branch reads the domain)
             SurfaceKind::Cone(s) => s
                 .step_inversion(k, point_on_surf, tol_3d, uv_guess)
+                .map_err(|e| {
+                    // the fork (dfc7cb6): off the generator is an answer
+                    if k.fixes.analytic_inversion_answers_apart
+                        && crate::surface::surf_of_revolution::p2::is_off_generator(&e)
+                    {
+                        crate::surface::surf_of_revolution::p2::not_within_tolerance(
+                            "surface::surface::Surface::step_inversion",
+                        )
+                    } else {
+                        e
+                    }
+                })
                 .and_then(|r| {
                     if r.inside {
                         Ok((r.uv, r.location))
+                    } else if k.fixes.analytic_inversion_answers_apart {
+                        // the fork (dfc7cb6): outside the sweep is an answer
+                        Err(SolidError::Upstream {
+                            operation: "surface::surface::Surface::step_inversion",
+                            code: SM_ERR_OUTSIDE_OF_DOMAIN,
+                            entity: None,
+                        })
                     } else {
                         Err(SolidError::sm_err(
                             "surface::surface::Surface::step_inversion",
@@ -2443,6 +2483,13 @@ impl Surface {
                 let r = s.step_inversion(anal_domain, point_on_surf, tol_3d, uv_guess);
                 if r.on_surface {
                     Ok((r.uv, r.location))
+                } else if k.fixes.analytic_inversion_answers_apart && r.answered {
+                    // the fork (dfc7cb6): a point off the sphere is an answer
+                    Err(SolidError::Upstream {
+                        operation: "surface::surface::Surface::step_inversion",
+                        code: SM_ERR_NOT_WITHIN_TOLERANCE,
+                        entity: None,
+                    })
                 } else {
                     Err(SolidError::sm_err(
                         "surface::surface::Surface::step_inversion",
@@ -2813,7 +2860,7 @@ impl Surface {
     /// B-spline swap, whose virtual `ToggleSwapUVBit` flips its swap flag and whose
     /// `SetCanonical` rebuilds its analytic data, status ignored).
     ///
-    /// Notifies nobody: [`Surface::swap_uv_notifying`] sends the edit notifications.
+    /// Notifies nobody: `Surface::swap_uv_notifying` sends the edit notifications.
     ///
     /// # Errors
     ///
@@ -3460,6 +3507,40 @@ impl Surface {
             approx_tol_3d,
             ang_tol_rad,
             None::<SurfaceIntersectContext<'_, crate::surface::surface::p4::NoObject>>,
+            &mut out,
+        );
+        (out, status)
+    }
+
+    /// [`Surface::global_surface_intersect_with_partial`] through the caller's
+    /// face-aware cache context, as [`Surface::global_surface_intersect_with_context`]
+    /// runs it (`handles` name this surface and `other` in their caches).
+    #[allow(clippy::too_many_arguments)]
+    pub fn global_surface_intersect_with_partial_context<O: SolutionObject + Copy + PartialEq>(
+        &self,
+        k: &Kernel,
+        handles: [Option<O>; 2],
+        context: &mut dyn SurfaceSolveContext<O>,
+        uv_domain: &Extent2d,
+        other: &Self,
+        other_uv_domain: &Extent2d,
+        use_surface_edges: [bool; 2],
+        approx_tol_3d: Option<f64>,
+        ang_tol_rad: Option<f64>,
+    ) -> (SurfaceIntersection, Result<()>) {
+        let mut out = SurfaceIntersection::default();
+        let status = self.global_surface_intersect_into(
+            k,
+            uv_domain,
+            other,
+            other_uv_domain,
+            use_surface_edges,
+            approx_tol_3d,
+            ang_tol_rad,
+            Some(SurfaceIntersectContext {
+                solver: context,
+                handles,
+            }),
             &mut out,
         );
         (out, status)
@@ -5525,10 +5606,10 @@ impl DerivSurfDefinition<'_> {
 // ---- SmDropCurveFail ----------------------------------------------------------------------
 
 /// `UNSURE` (`SmTypes.h`): the third value of an `SmBoolean`.
-pub const UNSURE: i32 = 2;
+pub use crate::error::SM_UNSURE as UNSURE;
 
 /// `SM_ERR_UNKNOWN` (`SmMessages.h`): the status of an unused failure record.
-pub const SM_ERR_UNKNOWN: i32 = 1003;
+pub use crate::error::SM_ERR_UNKNOWN;
 
 /// `SM_SS_NONE` (`SmTypes.h`): no singular sides.
 pub const SS_NONE: u64 = 0;
@@ -6957,7 +7038,15 @@ impl<O: SolutionObject> LsiGlobalSolver<'_, '_, O> {
             Ok(true)
         } else {
             // check lineVector for bounding box intersections
-            let hit = surf_box.intersect_line(point_on_line, self.line_vector)?;
+            // (with the opt-in fix a box that cannot be intersected rules nothing out,
+            // WR-663, tangency-labs/smlib 21dcf69)
+            let hit = match surf_box.intersect_line(point_on_line, self.line_vector) {
+                Ok(h) => h,
+                Err(e) if self.kernel.fixes.query_statuses_pass_on && !e.is_unported() => {
+                    return Ok(true);
+                }
+                Err(e) => return Err(e),
+            };
             Ok(hit.count() > 0)
         }
     }

@@ -877,6 +877,9 @@ impl FilletCorner {
                     .fillet_vertex_mut(face_fv)?
                     .set_fillet_vertex_type(FilletVertexType::RailXRail);
                 self.bevel = true;
+                // the fork's (WR-634, tangency-labs/smlib@9ba2b12): the mitre at the
+                // face's concave corner
+                self.mitre = mixed_convexity;
             }
 
             // Setup rails of fillet
@@ -958,7 +961,7 @@ impl FilletCorner {
     /// if a later operation fails. Vertex geometry is computed later.
     ///
     /// # Errors
-    /// [`SolidError::NullPointer`] when two consecutive edge uses share no face;
+    /// [`SolidError::null_pointer`] when two consecutive edge uses share no face;
     /// `SM_ERR` for a bevel corner other than three edge uses;
     /// [`SolidError::InvalidInput`] for a different corner kind, a solver list that does
     /// not match the edge uses, or missing topology upstream dereferences; those of the
