@@ -168,7 +168,7 @@ pub struct UpstreamFixes {
     /// failed point evaluation is the call's status and a zero area is
     /// `SM_ERR_INVALID_INPUT`, where upstream's turns give `(0, 0, 1)`.
     pub curve_loop_normal_from_area: bool,
-    /// `CalcRailIntEdgeuse`'s retry rail search holds a variable round's radius only where its first search does (at a corner calculated as constant radius), so the rail misses the arc it would meet only at that radius and the corner cuts the round off against the body; needs `fillet_nx1_end_rib_global_merge` there (WR-300, #1023).
+    /// `CalcRailIntEdgeuse`'s retry rail search holds a variable round's radius only where its first search does (at a corner calculated as constant radius), so the rail misses the arc it would meet only at that radius and the corner cuts the round off against the body; needs `fillet_nx1_end_rib_global_merge` there (WR-300, #1023). `RailRailIntersect` holds the radii at their end values only there too (its callers `CalcRailIntRail` and `CalcRailRailInterpolation`'s cubic rail interpolant): held at any other corner, two variable rounds meeting at a box's corner met where the laws are smaller and the trace from there failed with 1001 (the fork's tangency-labs/smlib@465b62b, the rule of 1d06159).
     pub fillet_retry_radius_as_first: bool,
     /// `TestRollOver` joins a rail's neighbouring intervals on its face or the face's boundary before the rollover, so a rail along its face's rim does not fail "Unable to Process Rollover" (WR-301, #485).
     pub fillet_rail_rim_on_face: bool,
