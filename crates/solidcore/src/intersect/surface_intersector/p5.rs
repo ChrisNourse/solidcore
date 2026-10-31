@@ -676,6 +676,9 @@ impl<'t, O: SolutionObject + Copy + PartialEq + 't> AdvSurfaceIntersector<'_, 't
 
         // while there are boundaryCurve/Surface xsect startPoints, use them to trace
         // out intersection curves (each pass pops one; none adds any)
+        // (not upstream, opt-in: one bound on the trace steps of all the start points, HANG-52)
+        self.base
+            .set_trace_budget(k.fixes.ssi_start_loop_trace_budget);
         while let Some(&start) = self.base.start_points.last() {
             // keep a copy of the start point (operator= into a fresh element)
             let mut tmp = TsectPnt::zeroed();
@@ -689,7 +692,10 @@ impl<'t, O: SolutionObject + Copy + PartialEq + 't> AdvSurfaceIntersector<'_, 't
 
             // Trace an intersection curve onto m_vCurvePoints.
             let input_trace_direction = self.base.curve_trace_direction;
-            if ignored(self.base.trace_curve(k, start, &out.curves_3d))?.is_some() {
+            let traced_ok = ignored(self.base.trace_curve(k, start, &out.curves_3d))?;
+            // (the bound is no status upstream ignores)
+            self.base.check_trace_budget()?;
+            if traced_ok.is_some() {
                 // StartPoint's UVTangent is tangent to the Surface domain boundary:
                 // trace the curve in both directions
                 let sp = self.base.point(start)?;
@@ -736,6 +742,8 @@ impl<'t, O: SolutionObject + Copy + PartialEq + 't> AdvSurfaceIntersector<'_, 't
                 self.base.through_points.push(tmp_id);
             }
         }
+
+        self.base.set_trace_budget(false);
 
         // Now that we have found all boundary intersections - look for non boundary
         // intersections (the SmAdvSurfaceIntersector override)
