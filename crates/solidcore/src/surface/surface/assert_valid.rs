@@ -75,7 +75,7 @@
 //! - **Extrusion origin zero (WR-511, #1508).** Test 8 uses the pinned unscaled
 //!   `SM_EFF_ZERO` by default; `Kernel::fixes.extrusion_origin_scaled_zero` uses
 //!   `SM_EFF_ZERO * (1 + origin.max_dimension())` for that solve only.
-//! `SmSTEPSurface` has no override and runs the base check.
+//! - `SmSTEPSurface` has no override and runs the base check.
 //! - **Contained checks.** Curve-bounded basis checks carry an explicit nesting
 //!   counter bounded by `MAX_GEOMETRY_NESTING` (32; fixtures reach at most 3).
 //!   Contained report keys are assigned in traversal order, distinct from the root
