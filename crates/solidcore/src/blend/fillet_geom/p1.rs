@@ -2375,6 +2375,50 @@ impl FilletBrep {
             }
         }
 
+        // With `fillet_split_edge_keeps_near_half` (WR-612, fork ceb3272): looking for both
+        // edges of a fillet edge split in two, one half's midpoint can lie on the curve to
+        // scaled zero while the other's lies on it only to the edges' tolerance. The close
+        // one is the other half: kept as the second edge, not dropped, when its ends lie on
+        // the curve too (a different curve passing near the midpoint [B332] is not taken).
+        if k.fixes.fillet_split_edge_keeps_near_half
+            && find_multiple_edges
+            && record.fillet_brep_edge1.is_some()
+            && record.fillet_brep_edge2.is_none()
+        {
+            if let Some(best) = best_edge1.filter(|&b| Some(b) != record.fillet_brep_edge1) {
+                let edge = fillet_brep.edge(best)?;
+                let edge_curve = edge
+                    .curve
+                    .as_ref()
+                    .ok_or_else(|| SolidError::null_pointer(OP_FIND_EDGE))?;
+                let mut on_curve = true;
+                for end in 0..2 {
+                    if !on_curve {
+                        break;
+                    }
+                    let t = if end == 0 {
+                        edge.interval.min()
+                    } else {
+                        edge.interval.max()
+                    };
+                    let end_pnt = edge_curve.evaluate_point(k, t)?;
+                    let ends = curve_3d.global_point_solve::<NoObject>(
+                        k,
+                        &ivl,
+                        SolverOperation::Intersect,
+                        end_pnt,
+                        edge.tolerance,
+                        SolutionRequested::Single,
+                        &GlobalPointSolveOptions::default(),
+                    )?;
+                    on_curve = ends.get(0).is_some();
+                }
+                if on_curve {
+                    record.fillet_brep_edge2 = Some(best);
+                }
+            }
+        }
+
         // every filletEdge should map to a Brep edge
         if record.fillet_brep_edge1.is_some() {
             return Ok(());
@@ -2456,10 +2500,13 @@ impl FilletBrep {
 
         // Rails and OtherRails:
         for rail in rails {
+            // `Trim` reads `SmTol::GetZoneTol3d(pRailCurve)`: the rail edge's tolerance
+            let rail_tol = super::p5::held_curve_zone_tol_3d(k, &self.brep, Some(rail))?;
             let edge = self.brep.edge_mut(rail)?;
             if let Some(curve) = edge.curve.as_mut() {
                 // may snap sIvl by tol to existing knots
-                let trimmed = curve.trim(k, trim_interval, TrimMode::Notify);
+                let trimmed =
+                    curve.trim_with_zone_tol(k, trim_interval, TrimMode::Notify, rail_tol);
                 if k.fixes.fillet_trim_status {
                     trimmed?;
                 } else {
@@ -4482,6 +4529,49 @@ mod tests {
         );
     }
 
+    /// gen1440 (`blend.fillet_geom_p1`): `SmBSplineCurve::Trim` maps
+    /// `SmTol::GetZoneTol3d(this)`, the rail edge's tolerance (zero on a fillet B-rep's
+    /// rails), to find degenerate end spans. A tiny rail whose short last span is far
+    /// below the system zone tolerance keeps its interior knot, as in C++; with the
+    /// system tolerance the span was removed (3 control points instead of 4).
+    #[test]
+    fn trim_geom_maps_the_rail_edges_tolerance() {
+        let k = Kernel::default();
+        let (mut fb, g, rails) = trim_test_geom();
+        let tiny = || {
+            let nurb = crate::nurbs::crv_basic::Curve::new(
+                vec![
+                    CPoint::new(0.0, 0.0, 0.0, NOW),
+                    CPoint::new(1e-9, 1e-9, 0.0, NOW),
+                    CPoint::new(2e-9, 0.0, 0.0, NOW),
+                    CPoint::new(3e-9, 1e-9, 0.0, NOW),
+                ],
+                2,
+                vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            )
+            .unwrap();
+            Curve::from(BSplineCurve::from_nurb(nurb, 3, false))
+        };
+        for rail in rails {
+            assert_eq!(edge_unit::tolerance(fb.brep(), rail).unwrap(), 0.0);
+            fb.brep_mut().edge_mut(rail).unwrap().curve = Some(tiny());
+        }
+        let mut interval = Extent1d::from_min_max(0.1, 0.55);
+        fb.trim_geom(&k, g, &mut interval).unwrap();
+        assert_eq!(interval, Extent1d::from_min_max(0.1, 0.55));
+        for rail in rails {
+            let curve = fb.brep().edge(rail).unwrap().curve.as_ref().unwrap();
+            assert_eq!(curve.natural_interval(), interval);
+            let crate::curve::curve::CurveKind::BSpline(b) = curve.kind() else {
+                panic!("a B-spline rail");
+            };
+            assert_eq!(
+                b.knots(None).unwrap(),
+                (vec![0.1, 0.5, 0.55], vec![3, 1, 3])
+            );
+        }
+    }
+
     #[test]
     fn noise_cleanup_rounds_near_decimals() {
         assert_eq!(clean_up_noise(1.0 + 1e-13), 1.0);
@@ -5035,5 +5125,63 @@ mod tests {
             })),
             Err(SolidError::Upstream { .. })
         ));
+    }
+
+    /// WR-612 (fork ceb3272): a fillet edge along the x axis from 0 to 10, split in two in
+    /// the fillet B-rep. The first half lies on its curve exactly; the second half only to
+    /// its tolerance (1e-8 off, a different evaluation of the same curve). With
+    /// `fillet_split_edge_keeps_near_half` both halves are found; upstream keeps only the
+    /// first. A near edge whose ends are off the curve (a different curve crossing near its
+    /// midpoint) is never taken.
+    #[test]
+    fn wr_612_split_fillet_edge_keeps_its_near_half() {
+        let line =
+            |a: Point3, b: Point3| Curve::from(BSplineCurve::create_line_segment(3, a, b).unwrap());
+        let found = |near_half: bool, second: (Point3, Point3)| {
+            let mut k = Kernel::default();
+            k.fixes.fillet_split_edge_keeps_near_half = near_half;
+            let mut fb = FilletBrep::new();
+            let start = fb
+                .brep_mut()
+                .add_vertex(Point3::new(0.0, 0.0, 0.0))
+                .unwrap();
+            let end = fb
+                .brep_mut()
+                .add_vertex(Point3::new(10.0, 0.0, 0.0))
+                .unwrap();
+            let e = fb.new_fillet_edge(start, end, None).unwrap();
+            let record = fb.brep_mut().edge_mut(e).unwrap();
+            record.curve = Some(line(
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+            ));
+            record.interval = Extent1d::from_min_max(0.0, 1.0);
+            // the fillet B-rep: the two halves
+            let mut body = FilletBrep::new();
+            let mut half = |a: Point3, b: Point3| {
+                let va = body.brep_mut().add_vertex(a).unwrap();
+                let vb = body.brep_mut().add_vertex(b).unwrap();
+                let h = body.new_fillet_edge(va, vb, None).unwrap();
+                let r = body.brep_mut().edge_mut(h).unwrap();
+                r.curve = Some(line(a, b));
+                r.interval = Extent1d::from_min_max(0.0, 1.0);
+                r.tolerance = 1e-5;
+                h
+            };
+            let first = half(Point3::new(0.0, 0.0, 0.0), Point3::new(5.0, 0.0, 0.0));
+            let other = half(second.0, second.1);
+            fb.find_fillet_brep_edge(&k, e, body.brep(), &[first, other], true)
+                .unwrap();
+            (fb.fillet_edge(e).unwrap().fillet_brep_edges(), first, other)
+        };
+        let near = (Point3::new(5.0, 1e-8, 0.0), Point3::new(10.0, 1e-8, 0.0));
+        let (edges, first, other) = found(true, near);
+        assert_eq!(edges, vec![first, other], "both halves");
+        let (edges, first, _) = found(false, near);
+        assert_eq!(edges, vec![first], "upstream: the near half is dropped");
+        // a curve crossing near the midpoint of the second half, its ends off the curve
+        let crossing = (Point3::new(5.0, -1.0, 1e-8), Point3::new(10.0, 1.0, 1e-8));
+        let (edges, first, _) = found(true, crossing);
+        assert_eq!(edges, vec![first], "a crossing curve is not taken");
     }
 }
