@@ -246,6 +246,8 @@ pub struct UpstreamFixes {
     pub loop_orientation_floor_from_loop_box: bool,
     /// The one-dimensional local solves ignore a failed guess in `SolveOscillating`'s sign-change search (WR-253, #481).
     pub oscillating_skips_failed_guesses: bool,
+    /// The N-dimensional local solve (`SmLocalSolveNd::SolveIt`) takes no value from a failed evaluation: it sums no equations of a failed clamped or scaled evaluation, takes the clamped-and-scaled step only when it evaluated, and then with that evaluation's Jacobian and found flag (upstream kept the unscaled point's), stops the line search when the clamped step failed and no scaled one was taken, and finds no solution when the best guess cannot be re-evaluated (WR-253 addendum, #1945; the fork's tangency-labs/smlib@d2757e1).
+    pub local_solve_nd_skips_failed_evaluations: bool,
     /// `sm_RefineCCSolutions` judges a range end's shift by its distance from 1 (WR-383, #527).
     pub refine_cc_range_ends: bool,
     /// `SmSurface::GetFlatCorners` tests each corner bit instead of clearing the others (WR-384, #525).

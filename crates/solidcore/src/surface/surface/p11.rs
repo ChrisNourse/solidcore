@@ -500,6 +500,7 @@ impl Surface {
         );
         let (ls_found, ls_x, termination) = {
             let mut ls = LocalSolveNd::new(&mut eval_fun, Some(&ivls), Some(&periodicities));
+            ls.set_skips_failed_evaluations(k.fixes.local_solve_nd_skips_failed_evaluations);
             ls.set_desired_accuracy(EFF_ZERO_SQ);
             ls.set_boundary_handler(BoundaryHandler::TotalBoundaryHits, 3);
             ls.set_maximum_iterations(20);
@@ -747,6 +748,9 @@ impl Surface {
                     let r2 = {
                         let mut ls2 =
                             LocalSolveNd::new(&mut eval_fun2, Some(&ivls2), Some(&periodicities2));
+                        ls2.set_skips_failed_evaluations(
+                            k.fixes.local_solve_nd_skips_failed_evaluations,
+                        );
                         ls2.set_boundary_handler(BoundaryHandler::TotalBoundaryHits, 8);
 
                         // solve it (SER: checked)
