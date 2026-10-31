@@ -232,6 +232,14 @@ pub struct UpstreamFixes {
     pub check_loop_vertex_tolerance: bool,
     /// `CheckLoop` compares an end projected from its vertex (no UV trim) with its neighbour on the nearest natural period of a closed direction, so a one-period seam jump is not an `SM_ERR` (WR-440, #530).
     pub check_loop_projected_seam_ends: bool,
+    /// `SmLoopuse::IsClosed3d` reports a loop open when an end-to-end gap exceeds its
+    /// cross-section tolerance: the over-tolerance value is `gap - tolerance`, where the
+    /// pinned C++ computes `tolerance - gap` (never above its zero initial maximum, so
+    /// it always reports closed). The reported gap is the actual gap, with its edge use
+    /// and tolerance; `bCheckAllGaps == FALSE` still stops at the first over-tolerance
+    /// gap (WR-93). Off by default for pinned C++ parity; callers inherit the kernel's
+    /// setting.
+    pub loop_use_reports_open_gaps: bool,
     /// `SmEdge::AssertValid` test 9 orders the faces round an edge by the direction to each face's point 20 edge tolerances into it (square to the edge) where two of them leave the edge within `SM_ANG_TOL_DEG` of each other, instead of by the binormals alone, which tie for faces tangent along the edge (a cylinder resting on a plane, kept by a boolean as a four-face edge) and fail the valid order (WR-540, #383; the fork's tangency-labs/smlib@5533bbb).
     pub edge_check_orders_tangent_faces: bool,
     /// `CreateOrientedTrimBoundary` takes a UV gap of whole periods (up to 1% of one) in a closed direction between consecutive curves for a seam crossing and moves the curves after it by the period, instead of filling it with a line across the whole domain that doubles the loop back on itself (WR-491). A loop that does not close that way keeps the line, and so does a gap along a singular side of the surface (a sphere's pole, a cone's apex; #1437).
@@ -264,6 +272,16 @@ pub struct UpstreamFixes {
     pub nurb_cylinder_inside_out_frame: bool,
     /// `SweepProfilesAlongPath` asks for caps only when the profile closes (WR-400, #837).
     pub planar_path_uncapped_open_profiles: bool,
+    /// `PositionProfileCurves` returns the first failing status of its two
+    /// `SmAxis2Placement::SetCanonical` calls, its three profile `Transform` calls and
+    /// `MakeUnitOrthoVectors`, instead of ignoring them and positioning the profiles
+    /// with the partial frame: a path start tangent whose squared length overflows
+    /// (a `1e300` component) unitizes to zero, `MakeUnitOrthoVectors` fails `SM_ERR`,
+    /// and upstream then transforms the profiles by an invalid partial frame (WR-632,
+    /// #483). The edits made before the first failure stay (no rollback); the identity
+    /// `SetCanonical` on the profile-normal frame (always successful upstream) is
+    /// elided. Off by default for pinned C++ parity.
+    pub planar_path_profile_placement_statuses: bool,
     /// A rotational sweep (whole or partial turn) makes each line and circular arc of its profile its cylinder, cone, sphere or torus, not only a one-curve profile's (WR-448, #545; SolidCraft change, tangency-labs/smlib 0b143f7).
     pub revolve_analytic_profile_faces: bool,
     /// With `revolve_analytic_profile_faces`, a revolved arc whose centre is within the B-rep tolerance of the axis is the sphere centred on the axis through the arc's ends, and an end within it of the axis is its pole, not a sphere (or torus) built on the arc's own off-axis circle with a pole row of radius about sqrt(2 tol R) (WR-471, #1123; tangency-labs/smlib, "a revolved arc centred within tolerance of the axis is a sphere through its ends").
@@ -440,6 +458,8 @@ pub struct UpstreamFixes {
     pub brep_area_between_solid_and_void: bool,
     /// An offset surface evaluated beyond its base's domain extends the base itself on every side that can grow at once, each by the domain size times the least power of two that reaches the point and never less than the extension it replaces, so two copies of one offset give the same points whatever was evaluated first (WR-458, #419; the fork's tangency-labs/smlib@2d7c7ed).
     pub offset_extension_from_base: bool,
+    /// With `offset_extension_from_base` (which must be on too; this flag does nothing without it), an offset surface whose base is a cylinder, cone, sphere or torus extends that base past its domain as itself (each end span's rational arc or straight line carried on, piece by piece, NLib's C-infinity extension), where upstream's tangent ruled extension (G1R) leaves the surface at once: a cylinder R25 continued 0.44 past its face's end was 0.0036 off the circle, and a round traced there was built that far off all along (WR-633, #960; the SolidCraft fork's tangency-labs/smlib@de0a6b8, branch `replay/1.0.1`).
+    pub offset_extension_as_itself: bool,
     /// `N_FillNSidedHole` (through `SmBSplineSurface::CreateCornerBlend`) shortens the cross-boundary derivative across an inner curve where its cubic blend from the opposite boundary would leave that boundary's tangent plane, so a corner patch (a fillet setback corner) stays inside planar faces it meets, with G1 kept (WR-461, #1170). Curved neighbours are not covered.
     pub corner_blend_stays_inside_neighbours: bool,
     /// `DoFilleting`'s `BooleanPostProcess` removes none of the target's own edges, nor an edge between two of its faces (the fork's `m_sPostProcessKeptEdges`/`Faces`), so the patches of a sphere imported in six faces are not merged into a face no patch's parameterization can carry (WR-459, #423; the fork's tangency-labs/smlib@9ddf4a8).
