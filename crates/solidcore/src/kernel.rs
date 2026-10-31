@@ -145,6 +145,9 @@ impl Caches {
 #[allow(clippy::struct_excessive_bools)]
 #[non_exhaustive]
 pub struct UpstreamFixes {
+    /// `SmPlane::IsNurbSurfacePlane` places a recognised surface's origin after
+    /// orthogonalising its axes (WR-652, upstream issue #1056).
+    pub plane_recognition_origin_after_axes: bool,
     /// `SmGapFunction::BuildSampleSet` samples the B-spline spans inside the requested
     /// curve interval or surface domain, normalizing against that interval and keeping
     /// its exact endpoints. Upstream starts at the first knot and normalizes against
