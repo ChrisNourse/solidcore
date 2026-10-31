@@ -3,9 +3,9 @@
 //!
 //! `cargo run --profile difftest -p difftest --example solidcraft_bench -- [options] [glob]`
 //!
-//! Options: `--fixes off|case|solidcraft|all` (default `case`: each case's own fixes;
-//! `off`: none; `solidcraft`: `UpstreamFixes::solidcraft()` plus the case's own; `all`:
-//! every `UpstreamFixes` field on), `--reps N` (runs per case, default 1; the reported
+//! Options: `--fixes off|case` (default `case`: each case's own `UpstreamFixes`;
+//! `off`: none), `--fix NAME` (repeatable: also turn on the fix `NAME`, by the field
+//! names case files use), `--reps N` (runs per case, default 1; the reported
 //! time is the minimum), `--dir D` (case files from `D` instead of
 //! `fixtures/solidcraft/`), `--quiet`. Prints one line per case (verdict, F/E/V, volume
 //! bits, best time) and the total, so two builds can be compared for identical results
@@ -15,25 +15,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use difftest::solidcraft::{self, Run};
-use solidcore::kernel::{Kernel, UpstreamFixes};
-
-fn kernel(mode: &str) -> Kernel {
-    let mut k = Kernel::default();
-    match mode {
-        "solidcraft" => k.fixes = UpstreamFixes::solidcraft(),
-        "all" => {
-            for name in UpstreamFixes::SOLIDCRAFT_FORK
-                .iter()
-                .chain(UpstreamFixes::SOLIDCRAFT_REPORTED)
-                .chain(UpstreamFixes::NOT_SOLIDCRAFT)
-            {
-                k.fixes.set_by_name(name, true);
-            }
-        }
-        _ => {}
-    }
-    k
-}
+use solidcore::kernel::Kernel;
 
 fn summary(run: &Run) -> String {
     match run {
@@ -55,6 +37,7 @@ fn main() {
     let mut mode = "case".to_string();
     let mut reps = 1usize;
     let mut quiet = false;
+    let mut extra_fixes: Vec<String> = Vec::new();
     let mut glob = None;
     let mut dir = None;
     let mut args = std::env::args().skip(1);
@@ -63,12 +46,13 @@ fn main() {
             "--fixes" => mode = args.next().unwrap_or_default(),
             "--reps" => reps = args.next().and_then(|n| n.parse().ok()).unwrap_or(1),
             "--quiet" => quiet = true,
+            "--fix" => extra_fixes.extend(args.next()),
             "--dir" => dir = args.next().map(std::path::PathBuf::from),
             _ => glob = Some(a),
         }
     }
-    if !["off", "case", "solidcraft", "all"].contains(&mode.as_str()) {
-        eprintln!("--fixes must be off, case, solidcraft or all");
+    if !["off", "case"].contains(&mode.as_str()) {
+        eprintln!("--fixes must be off or case");
         std::process::exit(2);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -86,11 +70,16 @@ fn main() {
         if mode == "off" {
             case.fixes.clear();
         }
+        for name in &extra_fixes {
+            if !case.fixes.contains(name) {
+                case.fixes.push(name.clone());
+            }
+        }
         let mut best = Duration::MAX;
         let mut out = String::new();
         for _ in 0..reps.max(1) {
             let t0 = Instant::now();
-            let run = solidcraft::run_rust_on(kernel(&mode), &case);
+            let run = solidcraft::run_rust_on(Kernel::default(), &case);
             best = best.min(t0.elapsed());
             out = summary(&run);
         }
