@@ -1,4 +1,4 @@
-//! Regression test for WR-609 (#1808; the fork's tangency-labs/smlib@2e8758b, capi test
+//! Regression test for WR-621 (#1808; the fork's tangency-labs/smlib@2e8758b, capi test
 //! `crease_rounds_from_half_a_degree`): `SmEdge::GetBlendEdgeuse` takes two faces for
 //! tangent within 2 degrees, so a crease of 0.5 to 2 degrees cannot be rounded. With
 //! `fillet_half_degree_crease` the limit is half a degree.
@@ -99,7 +99,7 @@ fn removed(turn: f64, r: f64) -> f64 {
 }
 
 #[test]
-fn wr_609_creases_from_half_a_degree_round() {
+fn wr_621_creases_from_half_a_degree_round() {
     for turn in [1.0, 3.0] {
         for r in [2.0, 20.0] {
             let got = round(true, turn, r)
@@ -120,7 +120,7 @@ fn wr_609_creases_from_half_a_degree_round() {
 /// Without the opt-in a 1 degree crease is taken for a smooth edge (within 2 degrees),
 /// as upstream does; a 3 degree one rounds either way.
 #[test]
-fn wr_609_without_the_opt_in_a_one_degree_crease_is_refused() {
+fn wr_621_without_the_opt_in_a_one_degree_crease_is_refused() {
     for r in [2.0, 20.0] {
         assert!(round(false, 1.0, r).is_err(), "1 degree, r {r}");
         let got = round(false, 3.0, r).unwrap();

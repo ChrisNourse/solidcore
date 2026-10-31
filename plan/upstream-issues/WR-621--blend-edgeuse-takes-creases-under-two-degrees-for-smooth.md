@@ -1,4 +1,4 @@
-#### WR-609. `GetBlendEdgeuse` takes a crease of 0.5 to 2 degrees for a smooth edge, so it cannot be rounded
+#### WR-621. `GetBlendEdgeuse` takes a crease of 0.5 to 2 degrees for a smooth edge, so it cannot be rounded
 - **Severity:** Wrong result
 - **Area:** Blends
 - **Location:** `source/SMLib/src/SmEdge.cpp:6817`, `SmEdge::GetBlendEdgeuse` (def. `:6746`).
@@ -8,7 +8,7 @@
 - **Confirmed:** by the port's test below. By default (pinned behaviour) the 1 degree crease is refused.
 - **Fix:** tangency-labs/smlib@2e8758b. The limit is half a degree (`cos 89.5°`), SolidCraft's one angle for a smooth edge. A 0.3 degree crease is still smooth.
 - **Rust port:** behaves as upstream by default. `Kernel::fixes.fillet_half_degree_crease` ports the fork's limit in `topology::edge::blend_edgeuse`.
-- **Tests:** `crates/solidcore/tests/wr_609_half_degree_crease_rounds.rs`:
+- **Tests:** `crates/solidcore/tests/wr_621_half_degree_crease_rounds.rs`:
   - with the opt-in, the 1 and 3 degree creases round at r 2 and r 20, a manifold solid with `20 r^2 (tan(d/2) - d/2)` removed (within 1e-6, as the fork asserts), and a 0.3 degree crease is refused;
   - without the opt-in, the 1 degree crease is refused and the 3 degree crease rounds the same.
 - **Difftest:** no change on the default path.
