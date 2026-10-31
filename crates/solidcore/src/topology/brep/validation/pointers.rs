@@ -1577,11 +1577,13 @@ mod issue_891_tests {
             let ivl = trim.natural_interval();
             (0..=8)
                 .map(|i| {
-                    let t = ivl.min() + (ivl.max() - ivl.min()) * (i as f64) / 8.0;
+                    let t = ivl.min() + (ivl.max() - ivl.min()) * f64::from(i) / 8.0;
                     trim.evaluate_point(k, t).unwrap()
                 })
                 .collect()
         }
+
+        type ReversalRun = (i32, Vec<EdgeuseId>, Vec<(EdgeuseId, Vec<Vec3>)>);
 
         struct Run {
             status: i32,
@@ -1675,10 +1677,7 @@ mod issue_891_tests {
             }
         }
 
-        fn all_present_run(
-            reversal: bool,
-            no_new: bool,
-        ) -> (i32, Vec<EdgeuseId>, Vec<(EdgeuseId, Vec<Vec3>)>) {
+        fn all_present_run(reversal: bool, no_new: bool) -> ReversalRun {
             let mut k = Kernel::default();
             k.fixes.uv_trim_reversal_on_surface = reversal;
             k.fixes.validation_does_not_make_uv_trims = no_new;
