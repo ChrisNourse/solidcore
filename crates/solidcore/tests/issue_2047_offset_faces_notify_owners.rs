@@ -48,3 +48,46 @@ fn offset_faces_on_brep_copy_keeps_owners() {
     let copy = brep_copy(&mut k, &b).unwrap();
     move_first_face_in(&mut k, copy);
 }
+
+/// A 60 x 40 x 20 block with its top front edge rounded r 2 (a fillet result, still
+/// `Notify`): each planar face moved 1 in, the round following where it touches the
+/// face (take off, move, reblend), comes back with its owners where the check looks.
+#[test]
+fn offset_faces_on_filleted_notify_block_keeps_owners() {
+    use solidcore::blend::fillet_executive::api::fillet_edges;
+    use solidcore::surface::plane::Plane;
+    use solidcore::topology::{edge, face, vertex};
+    let mut k = Kernel::default();
+    let mut b = create_box(&mut k, Point3::ZERO, 60.0, 40.0, 20.0).unwrap();
+    let e = b
+        .edges()
+        .ids()
+        .find(|&e| {
+            let (s, t) = edge::start_end_vertices(&b, e).unwrap();
+            [s, t].into_iter().flatten().all(|v| {
+                let p = vertex::point(&b, v).unwrap();
+                p.y.abs() < 1e-6 && (p.z - 20.0).abs() < 1e-6
+            })
+        })
+        .unwrap();
+    fillet_edges(&mut k, &mut b, &[e], 2.0, 1, 1, 1.0).unwrap();
+    assert_eq!(b.naming(), NamingScheme::Notify);
+    let mut moved = 0;
+    for f in p1::faces(&b, None).unwrap() {
+        let planar = face::p2::surface(&b, f)
+            .unwrap()
+            .unwrap()
+            .is_kind_of(Plane::TYPE)
+            .unwrap();
+        if !planar {
+            continue;
+        }
+        let mut c = b.clone();
+        let mut ex = OffsetFacesExecutive::new();
+        ex.offset_faces(&mut k, &mut c, &[f], -1.0).unwrap();
+        let check = check_brep(&mut k, &mut c, CheckLevel::Level2).unwrap();
+        assert_eq!(check.assert_valid, Some(true), "face {f:?}: {check:?}");
+        moved += 1;
+    }
+    assert_eq!(moved, 6);
+}
