@@ -284,8 +284,8 @@ fn put_features(ex: &FeatureExecutive<'_>, record: &mut Vec<f64>) -> SolidResult
         ]);
         for l in &f.loops {
             record.extend([
-                l.base_rb_type as u8 as f64,
-                l.feat_rb_type as u8 as f64,
+                f64::from(l.base_rb_type as u8),
+                f64::from(l.feat_rb_type as u8),
                 l.base_ext_dist,
                 l.feat_ext_dist,
                 l.base_edges.len() as f64,
@@ -450,10 +450,10 @@ impl UnitDiff for Runner {
         while at < raw.len() {
             let has = *raw.get(at).ok_or_else(|| herr("short feature"))?;
             at += 1;
-            if has != 0. {
-                merge(&mut out, &format!("feature{fi}_"), native_brep(&raw, &mut at)?);
-            } else {
+            if has == 0. {
                 out = out.int(&format!("feature{fi}_none"), 1);
+            } else {
+                merge(&mut out, &format!("feature{fi}_"), native_brep(&raw, &mut at)?);
             }
             fi += 1;
         }
