@@ -23,6 +23,7 @@
     clippy::indexing_slicing
 )]
 
+use solidcore::blend::fillet_executive::p3::NoRoomReason;
 use solidcore::blend::fillet_executive::session::FilletSession;
 use solidcore::blend::fillet_geom::p1::FilletErrorType;
 use solidcore::curve::curve::Curve;
@@ -144,6 +145,35 @@ fn a_concave_overflow_is_refused() {
         )
     );
     assert_eq!(blend(false, 7.0, 5.0, 8.0, false).1, NO_ROOM);
+}
+
+/// The typed reason of the refusal of the edge at `(x, y)`.
+fn reason(x: f64, y: f64, r: f64, chamfer: bool) -> Option<NoRoomReason> {
+    let mut k = kernel(true);
+    let mut b = stepped_bar(&mut k);
+    let e = edge_at(&k, &b, x, y);
+    let mut session = FilletSession::new(&mut k, &mut b).unwrap();
+    session
+        .prepare_constant_radius_edges(&mut k, &[e], r, u32::from(!chamfer), 1, 1.0)
+        .unwrap();
+    assert!(session.do_fillet(&mut k).is_err());
+    session.error_info().no_room_reason()
+}
+
+#[test]
+fn each_refusal_names_its_reason() {
+    assert_eq!(
+        reason(10.0, 0.0, 6.0, false),
+        Some(NoRoomReason::RailLeavesFace)
+    );
+    assert_eq!(
+        reason(10.0, 5.0, 4.0, false),
+        Some(NoRoomReason::RoundIntoMaterial)
+    );
+    assert_eq!(
+        reason(7.0, 5.0, 8.0, false),
+        Some(NoRoomReason::ConcaveOverflow)
+    );
 }
 
 #[test]

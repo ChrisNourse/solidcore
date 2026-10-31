@@ -96,6 +96,19 @@ pub enum NoRoomReason {
     /// A blend's rail runs inside the band another blend takes off a face they share (the
     /// fork's `BandsClearOtherRails`; `fixes.fillet_refuse_overlapping_bands`, WR-542).
     BandsOverlap,
+    /// A concave blend (one that adds material) whose rail leaves its face (the fork's cliff
+    /// overflow choice; `fixes.fillet_cliff_overflow`, WR-631).
+    ConcaveOverflow,
+    /// A round or curvature-continuous blend whose rail leaves its face into the body's
+    /// material, beyond a wall (WR-631).
+    RoundIntoMaterial,
+    /// A rail leaves its face while another blend adds material (WR-631).
+    OverflowWithConcaveBlend,
+    /// A rail leaves its face while a rail rolls over a tangent edge (WR-631).
+    OverflowWithRollover,
+    /// A rail leaves its face and the fillet ends on more than one face (the global merge,
+    /// WR-631).
+    OverflowWithGlobalMerge,
 }
 
 /// The initialized error-info members p3 reads or writes. Corner kinds use the
@@ -2489,24 +2502,25 @@ impl<O: ClassObject + SolutionObject + Ord> FilletExecutive<O> {
         }
         if overflow {
             let why = if concave_overflow {
-                Some("Fillet Error: a rail leaves the face it rolls on (the blend is larger than the faces allow, and adds material)")
+                Some((NoRoomReason::ConcaveOverflow, "Fillet Error: a rail leaves the face it rolls on (the blend is larger than the faces allow, and adds material)"))
             } else if round_into_material {
-                Some("Fillet Error: a round's rail leaves the face it rolls on into the body's material (beyond a wall)")
+                Some((NoRoomReason::RoundIntoMaterial, "Fillet Error: a round's rail leaves the face it rolls on into the body's material (beyond a wall)"))
             } else if concave {
-                Some("Fillet Error: a rail leaves the face it rolls on while another blend adds material (not supported together)")
+                Some((NoRoomReason::OverflowWithConcaveBlend, "Fillet Error: a rail leaves the face it rolls on while another blend adds material (not supported together)"))
             } else if rolls_over {
-                Some("Fillet Error: a rail leaves the face it rolls on while a rail rolls over a tangent edge (not supported together)")
+                Some((NoRoomReason::OverflowWithRollover, "Fillet Error: a rail leaves the face it rolls on while a rail rolls over a tangent edge (not supported together)"))
             } else if self.options.global_merge {
-                Some("Fillet Error: a rail leaves the face it rolls on, and the fillet ends on more than one face (not supported together)")
+                Some((NoRoomReason::OverflowWithGlobalMerge, "Fillet Error: a rail leaves the face it rolls on, and the fillet ends on more than one face (not supported together)"))
             } else {
                 None
             };
-            if let Some(why) = why {
-                return self.record_no_room(why);
+            if let Some((reason, why)) = why {
+                return self.record_no_room(reason, why);
             }
             self.cliff_overflow = true;
             // the overflow's construction is not ported yet (see the doc)
             return self.record_no_room(
+                NoRoomReason::RailLeavesFace,
                 "Fillet Error: a rail leaves the face it rolls on (the blend is larger than the faces allow)",
             );
         }
