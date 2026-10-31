@@ -940,7 +940,7 @@ impl OffsetExecutive {
             // (an inner loop's offset grown past the outer loop's) is rebuilt from the
             // stretches of its loops that bound it, before the merge sees it.
             if kernel.fixes.offset_resolve_crossing_loops {
-                self.resolve_crossing_loops(kernel, notifications)?;
+                self.resolve_crossing_loops(kernel, original, notifications)?;
             }
 
             let mut result = self.piecewise_merge(kernel, original, Some(&mut *notifications))?;
