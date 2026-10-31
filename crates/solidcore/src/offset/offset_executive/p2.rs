@@ -45,11 +45,6 @@
 //! every `Result` exit. The shell difference delegates native context/error state
 //! to the real Boolean adapter; late deferred errors report actual operand ownership,
 //! not parity with the native ownership flag.
-//! Opt-in (WR-344/#1818): with `Kernel::fixes.offset_extended_edges_mated`, a manifold
-//! input's final `shell_difference` result is refused unless it is still a manifold
-//! solid, so the relaxation cannot turn the pinned C++ 1001 into a broken wall. The
-//! guard runs after the difference has consumed the input; the early open-sheet return
-//! and the sheet-thickening branch are unchanged.
 //! Every entry point carries the source B-rep's own attributes ([`Brep::add_attribute`])
 //! through the caller's stores to the returned B-rep (`attributes`).
 //! There is no new recursion; all owned loops are bounded by existing arena/relation lengths.
@@ -191,10 +186,6 @@ pub struct SolidOffsetOptions {
 /// In particular a positive shell Boolean can consume the input before a late
 /// deferred cache/transform error; its actual operand slot controls this report.
 /// The real manifold query and strict radius guard run before offset construction.
-/// The opt-in final-wall refusal (WR-344/#1818) runs after `shell_difference` has
-/// consumed the input, so it reports `retained_input = None` and
-/// [`input_ownership_transferred`](Self::input_ownership_transferred) `= true`, like
-/// the other late shell errors.
 #[derive(Debug)]
 pub struct ShellOutcome {
     /// Native shell status and, on success, its owned B-rep.
@@ -427,19 +418,23 @@ impl OffsetExecutive {
                 tolerance,
                 notifications,
             )?;
-            make_shell_edges_exact(kernel, &mut shell, notifications)?;
-            // Opt-in (WR-344/#1818): the intermediate check above does not cover the
-            // final difference. For a manifold input the result must still be a manifold
-            // solid; the relaxation flag must not turn an earlier refusal into a broken
-            // wall. `shell_difference` has already consumed the input, so this late
-            // refusal reports no retained input (ownership transferred), like the other
-            // late shell errors. The early open-sheet return above is untouched.
+            // Opt-in (WR-344 addendum, tangency-labs/solidcore#1818): with the mated pairs
+            // of an extended offset left out of its merge, an offset the merge would have
+            // refused can reach the difference, which then hands back no solid (a ruled
+            // square-to-circle loft shelled inward: ten faces, not manifold, volume 0).
+            // The fork's `SmOffsetExecutive::ShellBrep` returns it too; its C API refuses
+            // any operation on a solid whose result is no closed manifold solid
+            // (`finish`, `SMLIB_ERR_NOT_SOLID`). As WR-454's and WR-578's opt-ins do for
+            // the offset, the flag must not turn upstream's refusal into a success on a
+            // broken body.
             if kernel.fixes.offset_extended_edges_mated
+                && options.offset.extend_convex_edges
                 && input_is_manifold
                 && !brep_is_manifold_solid(&shell)?
             {
                 return Err(SolidError::sm_err(OP_SHELL));
             }
+            make_shell_edges_exact(kernel, &mut shell, notifications)?;
             Ok(shell)
         })();
         // (not upstream) the attributes the notifications left on the result's objects
