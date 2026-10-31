@@ -1461,9 +1461,8 @@ fn private_source_shift(
     for m in 1..64_u64 {
         let shift = m << 44;
         let clear = source.iter().all(|&key| {
-            key.checked_add(shift).is_some_and(|moved| {
-                !crate::geom::context::is_reserved_key(ObjectKey(moved)) && !copy.contains(&moved)
-            })
+            key.checked_add(shift)
+                .is_some_and(|moved| !is_reserved_key(ObjectKey(moved)) && !copy.contains(&moved))
         });
         if clear {
             return Ok(Some(shift));
