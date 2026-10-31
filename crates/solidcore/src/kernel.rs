@@ -209,7 +209,7 @@ pub struct UpstreamFixes {
     /// failed point evaluation is the call's status and a zero area is
     /// `SM_ERR_INVALID_INPUT`, where upstream's turns give `(0, 0, 1)`.
     pub curve_loop_normal_from_area: bool,
-    /// `CalcRailIntEdgeuse`'s retry rail search holds a variable round's radius only where its first search does (at a corner calculated as constant radius), so the rail misses the arc it would meet only at that radius and the corner cuts the round off against the body; needs `fillet_nx1_end_rib_global_merge` there (WR-300, #1023).
+    /// `CalcRailIntEdgeuse`'s retry rail search holds a variable round's radius only where its first search does (at a corner calculated as constant radius), so the rail misses the arc it would meet only at that radius and the corner cuts the round off against the body; needs `fillet_nx1_end_rib_global_merge` there (WR-300, #1023). `RailRailIntersect` holds the radii at their end values only there too (its callers `CalcRailIntRail` and `CalcRailRailInterpolation`'s cubic rail interpolant): held at any other corner, two variable rounds meeting at a box's corner met where the laws are smaller and the trace from there failed with 1001 (the fork's tangency-labs/smlib@465b62b, the rule of 1d06159).
     pub fillet_retry_radius_as_first: bool,
     /// `TestRollOver` joins a rail's neighbouring intervals on its face or the face's boundary before the rollover, so a rail along its face's rim does not fail "Unable to Process Rollover" (WR-301, #485).
     pub fillet_rail_rim_on_face: bool,
@@ -484,11 +484,17 @@ pub struct UpstreamFixes {
     /// Planar path sweeps propagate mandatory operation failures and delete their
     /// owned temporary B-reps on failure (#483). Off by default for pinned compatibility.
     pub planar_path_sweep_statuses: bool,
-    /// Fillet corners return failed tangent/binormal evaluations, angles and UV
-    /// refinements before installing invalid geometry (#483). Off by default.
+    /// Fillet corners fail softly where a status upstream ignores would leave an unset
+    /// value, as the fork does (tangency-labs/smlib 66b02de; #483, changed by #2009):
+    /// `sm_TestG1Continuity` finds no tangency when an end tangent cannot be evaluated,
+    /// and `CheckAndFixDegeneracy` refines a vertex's UV point only with a computed one.
+    /// The binormal evaluations, the G1 angle and the Nx1 degeneracy test keep upstream's
+    /// handling, as the fork does. Off by default.
     pub fillet_corner_statuses: bool,
-    /// Fillet edge-domain preparation returns copy/trim failures instead of using
-    /// an untrimmed curve as the requested domain (#483). Off by default.
+    /// `sm_CheckEdgeCurveDomains` returns no trimmed curve (the edge's own curve is
+    /// used) when the copy cannot be made or trimmed, as the fork does
+    /// (tangency-labs/smlib 66b02de; #483, changed by #2009), instead of returning an
+    /// untrimmed copy as the requested domain. Off by default.
     pub fillet_edge_curve_domain_statuses: bool,
     /// Offset tangent-gap checks skip a sample they cannot evaluate instead of
     /// measuring an unset point, as the fork does (`HaveTangentGaps`, tangency-labs/smlib
@@ -506,6 +512,12 @@ pub struct UpstreamFixes {
     /// instead of the operation carrying on and reporting success (WR-658, #2009 group A;
     /// tangency-labs/smlib 60a8a51, 4803d6d, e7ebc8d). Off by default for pinned parity.
     pub brep_edit_statuses_pass_on: bool,
+    /// The fillet executive, solvers, corners and geometry pass on the statuses SMLib
+    /// drops: a failed solver load, orientation, list edit, copy, trim, interval edit,
+    /// evaluation, knot edit or split-face update returns its error instead of the fillet
+    /// carrying on and reporting success (WR-661, #2009 group B; tangency-labs/smlib
+    /// 873c7c9, 66b02de, 9b7cd48). Off by default for pinned parity.
+    pub fillet_statuses_pass_on: bool,
     /// `SmShell::IsInnerShellOf` passes on the statuses it ignores (fork 4038552): `UNSURE` when the outer shell's closure, the B-rep's box, the sample points or a crossing face's point or normal cannot be computed; a ray that cannot be solved or classified decides nothing and the next ray is tried (WR-497, #1473).
     pub shell_inner_shell_of_statuses: bool,
     /// `SmEdge::ReverseOrientation` returns a failed curve reversal's status before installing the interval, flipping the edge uses or deleting their UV trims, and an edge without curve keeps its interval (WR-260, #521; WR-260 addendum, tangency-labs/smlib 47507b6).
@@ -683,6 +695,8 @@ pub struct UpstreamFixes {
     pub fillet_run_on_past_far_end_only: bool,
     /// With `fillet_trace_reaches_rails`, `RailEdgeuseIntersect` evaluates a side edge's linear B-spline UV trim with out-of-bounds evaluation on over the run-on range (on its own copy of the trim), so it continues along its line past its ends as a line trim does. An `SmBSplineCurve` clamps the parameter to its natural interval (`SmBSplineCurve::Evaluate`, `SmBSplineCurve.cpp:3052`), so the run-on did nothing on the exact degree-1 B-spline trims `SwapUV` mirrors onto some of a box's faces: at a side edge with a line trim on one wall and a B-spline on the other, one rail's end was found past the edge's end and the other's not at all, and a chamfer split its corner's vertex between two points and failed with error 3, corner edge computation (WR-654, #1981; a round on a 5 x 5 box's edge failed with error 4).
     pub fillet_run_on_bspline_trims: bool,
+    /// `SmFilletGeom::TrimRailCurves` trims a rail at its own knot next to the parameter its end vertex drops to, inside the trim, when the rail between the two is no longer than the target B-rep's zone tolerance (`sm_SnapRailEndToKnot`): a trim there left an end span shorter than the tolerance with coincident control points, an internal point singularity of the rail and of the face curves trimmed with it, which the body check refuses. It happens where the rail stands still at a face's boundary past its end and where the section's other rail crosses its side edge there (WR-664; the fork's tangency-labs/smlib@7d79866).
+    pub fillet_rail_trim_at_near_knot: bool,
     /// `SmMerge::BooleanLists` copies its surface operands with the virtual `Copy` (the derived surface, its natural domain and its kind), where upstream's base copy constructor slices every surface to a geometry-less `SmSurface`, so a surface list always fails with `SM_ERR` and the planar 2D path is never taken (WR-196; `plan/upstream-issues/WR-196--booleanlists-slices-derived-surfaces-into-base-smsurface.md`).
     pub boolean_lists_virtual_surface_copies: bool,
     /// `SmSphere::IntersectWithPlane` and `IntersectWithSphere` return a single touching point only when the intersection circle's own radius (`sqrt(R^2 - d^2)`, or the two-sphere circle's height, each formed from the gaps to tangency) is within the tolerance, not whenever the gap to tangency is, which collapsed circles of radius up to about `sqrt(2 R tol)` (1e-3 for `R = 1`, `tol = 1e-6`) into one point (WR-79 part 1, #396; the fork's tangency-labs/smlib@30d25bf).
