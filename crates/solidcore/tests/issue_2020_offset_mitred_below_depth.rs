@@ -5,7 +5,7 @@
 //! floor, and the rounds meet it.
 //!
 //! The volume is analytic: each section at height z is the 34 x 24 top moved out by
-//! w(z) = sqrt(9 - (z - z_axis)^2) (3 below the axis), its corners mitred, so
+//! `w(z) = sqrt(9 - (z - z_axis)^2)` (3 below the axis), its corners mitred, so
 //! V = integral of (34 + 2w)(24 + 2w) dz over 0..10 + d.
 //!
 //! With SolidCraft's flags (183 `UpstreamFixes`, among them the fork's cliff-overflow
