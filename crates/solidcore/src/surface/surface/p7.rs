@@ -67,13 +67,23 @@
 //!   `SM_SUCCESS` (that is, `FALSE`) for a node outside its face and `NER`'s status
 //!   (non-zero: `TRUE`) for a missing patch; `sm_GoodDropResult` compares the guess and
 //!   result distances with swapped names (the opt-in
-//!   `Kernel::fixes.good_drop_result_distances_in_order` compares them the right way round,
-//!   WR-56); `FindDegenParamForDirection` compares a sample fraction with the parameter
+//!   `Kernel::fixes.good_drop_result_distances_in_order` compares them the right way round
+//!   and takes a foot only at the local solve's tight tolerance, WR-56); `FindDegenParamForDirection` compares a sample fraction with the parameter
 //!   `dS`.
 //! - **Projection curve class.** `CreateParallelProjectionCurves` takes a [`Curve`] for
 //!   upstream's `const SmBSplineCurve&`; a curve outside the `SmBSplineCurve` classes
 //!   (B-spline, line, ellipse, hyperbola, parabola), which upstream's type rules out,
 //!   is `SM_ERR_INVALID_INPUT` before the sweep.
+//! - **Projection approximation tolerance (HANG-32).** The public
+//!   `CreateParallelProjectionCurves` refuses a supplied approximation tolerance that
+//!   is not finite, positive and normal before preparing the cache or geometry. The
+//!   C++ reference is reported to run for more than 15 minutes on the smallest
+//!   subnormal (the looping routine was not located), and the FFI already refuses such
+//!   inputs. `None` and every finite positive normal value are accepted, with no upper
+//!   cap. This is a deterministic early public-API contract, not a claim that the Rust
+//!   solver would otherwise fail to terminate: its global solves are bounded
+//!   ([`crate::geom::global_solver::MAX_SOLVE_DEPTH`] /
+//!   [`crate::geom::global_solver::MAX_SOLVE_BRANCHES`]).
 //! - **`GlobalPointSolve_0`** takes the kernel and the surface's handle `surface: O`
 //!   (the cache's owner object and the solutions' object), as `GlobalLineIntersect`
 //!   does; it and `SmSPGlobalSolver::BranchMayContainAnswers` (which reads the cache
@@ -1711,10 +1721,12 @@ impl Surface {
     ///
     /// # Errors
     ///
-    /// `SM_ERR_INVALID_INPUT` for a zero projection vector or a curve of another class;
-    /// `SM_ERR_NULL_POINTER` without a surface cache; those of the continuities, the
-    /// boxes, the sweep, its move and the intersection; [`SolidError::Unported`] from
-    /// unported callees of the surface cache and the intersector.
+    /// `SM_ERR_INVALID_INPUT` for a zero projection vector, a supplied approximation
+    /// tolerance that is not finite, positive and normal (HANG-32), or a curve of
+    /// another class; `SM_ERR_NULL_POINTER` without a surface cache; those of the
+    /// continuities, the boxes, the sweep, its move and the intersection;
+    /// [`SolidError::Unported`] from unported callees of the surface cache and the
+    /// intersector.
     pub fn create_parallel_projection_curves(
         &self,
         k: &Kernel,
@@ -1790,6 +1802,16 @@ impl Surface {
             .is_none_or(core::cmp::Ordering::is_lt)
         {
             return Err(SolidError::invalid_input(OP_PROJ, "zero projection vector"));
+        }
+
+        // check input - a supplied approximation tolerance must be finite, positive and
+        // normal (HANG-32): a subnormal one spins the C++ projector, and the FFI already
+        // refuses it. Done before any cache or geometry preparation; `None` is unchanged.
+        if opt_approx_tol_3d.is_some_and(|t| !(t.is_finite() && t >= f64::MIN_POSITIVE)) {
+            return Err(SolidError::invalid_input(
+                OP_PROJ,
+                "approximation tolerance must be finite, positive and normal (HANG-32)",
+            ));
         }
 
         // check state - internal surface continuities are better than C0 (NER; the
@@ -2633,7 +2655,10 @@ pub fn check_seam_drop<S: SurfaceEvaluate + ?Sized>(
 /// Its last test, meant to refuse a result farther from the point than the guess,
 /// measures the two distances the wrong way round, as upstream; with
 /// `Kernel::fixes.good_drop_result_distances_in_order` (WR-56, the fork's
-/// tangency-labs/smlib@0b4de8c) it measures them the right way.
+/// tangency-labs/smlib@0b4de8c / eaa998a) it measures them the right way, and takes a
+/// result as the foot only when the gap's components along the unit tangents are
+/// within the local solve's tight tolerance `EFF_ZERO * (1 + max|P|)` (upstream: their
+/// sum under 1e-4, an interior result each under 1e-3).
 ///
 /// # Errors
 ///
@@ -2672,7 +2697,17 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
     let gap = pt_to_drop - srf_point;
     let fu = gap.dot(su);
     let fv = gap.dot(sv);
-    if fu.abs() + fv.abs() < 0.0001 {
+    // Upstream takes any foot 1e-4 off along the surface (an interior one 1e-3 off in
+    // each direction). With the opt-in (tangency-labs/smlib@eaa998a, with the distance
+    // swap below), a foot is one the local solve converged to by its own tight
+    // tolerance, `LocalPointSolve_1`'s; a stalled solve goes to the global solve.
+    let (foot_tol, interior_tol) = if k.fixes.good_drop_result_distances_in_order {
+        let tight_tol = EFF_ZERO * (1.0 + pt_to_drop.max_dimension());
+        (tight_tol, tight_tol)
+    } else {
+        (0.0001, 0.001)
+    };
+    if fu.abs() + fv.abs() < foot_tol {
         return Ok(true);
     }
 
@@ -2685,7 +2720,7 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
         if fu < -EFF_ZERO {
             return Ok(false);
         }
-    } else if fu.abs() > 0.001 {
+    } else if fu.abs() > interior_tol {
         return Ok(false); // interior, bad fcn value.
     }
 
@@ -2698,7 +2733,7 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
         if fv < -EFF_ZERO {
             return Ok(false);
         }
-    } else if fv.abs() > 0.001 {
+    } else if fv.abs() > interior_tol {
         return Ok(false); // interior, bad fcn value.
     }
 
@@ -3037,6 +3072,7 @@ fn cs_normalize_local_solve(
         EFF_ZERO_SQ,
     );
     let mut solver = LocalSolveNd::new(&mut equations, Some(&bounds), Some(&periodicities));
+    solver.set_skips_failed_evaluations(k.fixes.oscillating_skips_failed_guesses);
     solver.set_boundary_handler(BoundaryHandler::TotalBoundaryHits, 5);
     let solution = solver.solve_it(guess, EFF_ZERO_SQRT)?;
     // No: see note in upstream [B234]: not found is not found, whatever the reason.
@@ -3046,6 +3082,7 @@ fn cs_normalize_local_solve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::curve::hermite_curve::HermiteCurve;
     use crate::surface::plane::Plane;
 
     /// tangency-labs/solidcore#525 (WR-384): with the corner points wanted, upstream's
@@ -3204,9 +3241,131 @@ mod tests {
         // upstream: the nearer result is refused, the farther one taken
         assert!(!good(&k, nearer_guess));
         assert!(good(&k, foot_guess));
+        // With the opt-in, a result 5e-4 off along the surface is not one the local
+        // solve converged to (tight tolerance 6e-12 here), whatever the guess
+        // (tangency-labs/smlib@eaa998a); the distance test is covered on the domain
+        // boundary by `issue_1852_good_drop_compares_the_actual_guess_distance`.
         k.fixes.good_drop_result_distances_in_order = true;
-        assert!(good(&k, nearer_guess));
+        assert!(!good(&k, nearer_guess));
         assert!(!good(&k, foot_guess));
+    }
+
+    /// WR-56 (tangency-labs/smlib@eaa998a): with the opt-in, `sm_GoodDropResult` takes
+    /// a local result as the foot only when `|Fu| + |Fv|` is under the local solve's
+    /// tight tolerance `EFF_ZERO * (1 + max|P|)`, and refuses an interior result with
+    /// either component over it; upstream takes any foot whose components sum under
+    /// 1e-4 (and an interior one each under 1e-3). The point lies on the plane `d`
+    /// from the result along `S_u`; the guess is the result itself, so the distance
+    /// test never refuses.
+    #[test]
+    fn wr_56_good_drop_result_takes_only_a_tightly_converged_foot() {
+        let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
+        let s = Surface::from(Plane::from_normal(Point3::ZERO, Vec3::Z));
+        let mut k = Kernel::default();
+        let result_uv = Point2::new(0.5, 0.5);
+        let (result_point, su, _) =
+            evaluate_1st_derivatives(&k, &s, result_uv, Side::Left, Side::Left).unwrap();
+        let su = su.unitize_or_z();
+        let mut sol = SolutionEnd::new();
+        sol.solution_value = 1.0;
+        *sol.param_mut(0).unwrap() = result_uv.x;
+        *sol.param_mut(1).unwrap() = result_uv.y;
+        let good = |k: &Kernel, d: f64| {
+            good_drop_result(k, &s, &domain, result_point + d * su, result_uv, &sol).unwrap()
+        };
+        let tight = EFF_ZERO * (1.0 + (result_point + 1e-6 * su).max_dimension());
+        assert!(tight < 1e-11);
+        // Upstream: every foot within 1e-4 is taken, and an interior one up to 1e-3
+        // that passes the distance test.
+        assert!(good(&k, 1e-6));
+        assert!(good(&k, 5e-5));
+        assert!(good(&k, 5e-4));
+        assert!(good(&k, 1e-13));
+        assert!(!good(&k, 2e-3));
+        // Opt-in: only the foot within the tight tolerance.
+        k.fixes.good_drop_result_distances_in_order = true;
+        assert!(!good(&k, 1e-6));
+        assert!(!good(&k, 5e-5));
+        assert!(!good(&k, 5e-4));
+        assert!(good(&k, 1e-13));
+        assert!(!good(&k, 2e-3));
+    }
+
+    /// HANG-32: the public projection entry rejects a supplied approximation
+    /// tolerance that is not finite, positive and normal before it prepares any cache
+    /// or geometry; the FFI already refuses the same inputs. The unsupported Hermite
+    /// curve keeps the accepted cases on the cheap path to the existing
+    /// `not an SmBSplineCurve` refusal (no intersector), so this is a contract test,
+    /// not a successful projection.
+    #[test]
+    fn hang_32_projection_rejects_non_normal_approximation_tolerance() {
+        let k = Kernel::default();
+        let s = plane();
+        let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
+        let unsupported = Curve::from(HermiteCurve::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::X,
+            Point3::new(1.0, 0.0, 0.0),
+            Vec3::X,
+            3,
+        ));
+        let call = |approx: Option<f64>, vector: Vec3| {
+            s.create_parallel_projection_curves(
+                &k,
+                &domain,
+                &unsupported,
+                vector,
+                Some(1.0),
+                approx,
+                None,
+            )
+        };
+
+        let rejected = |approx: f64| match call(Some(approx), Vec3::Z) {
+            Err(SolidError::InvalidInput { operation, reason }) => {
+                assert_eq!(operation, OP_PROJ);
+                assert_eq!(
+                    reason,
+                    "approximation tolerance must be finite, positive and normal (HANG-32)"
+                );
+            }
+            other => panic!("approximation tolerance {approx:e} was not rejected: {other:?}"),
+        };
+        for approx in [
+            f64::from_bits(1),
+            f64::from_bits(0x000F_FFFF_FFFF_FFFF),
+            0.0,
+            -0.0,
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            rejected(approx);
+        }
+
+        // The precondition accepts `None` and every finite positive normal value, with
+        // no upper cap: each reaches the later unsupported-kind refusal.
+        for approx in [None, Some(f64::MIN_POSITIVE), Some(1e-6), Some(f64::MAX)] {
+            match call(approx, Vec3::Z) {
+                Err(SolidError::InvalidInput { operation, reason }) => {
+                    assert_eq!(operation, OP_PROJ);
+                    assert_eq!(reason, "not an SmBSplineCurve");
+                }
+                other => {
+                    panic!("approximation tolerance {approx:?} was rejected too early: {other:?}")
+                }
+            }
+        }
+
+        // The zero projection vector keeps its precedence over the new check.
+        match call(Some(f64::from_bits(1)), Vec3::ZERO) {
+            Err(SolidError::InvalidInput { operation, reason }) => {
+                assert_eq!(operation, OP_PROJ);
+                assert_eq!(reason, "zero projection vector");
+            }
+            other => panic!("zero vector did not take precedence: {other:?}"),
+        }
     }
 
     #[test]
@@ -3255,19 +3414,21 @@ mod tests {
     /// test rejects a drop that improved on the guess. The opt-in
     /// `Kernel::fixes.good_drop_result_distances_in_order` compares the actual
     /// guess and result distances. Every case reaches the final comparison: the
-    /// point lies on the plane, `1/2048` from the result along `S_u`, so `Fu` is
-    /// `1/2048` and `Fv` is zero, past the residual early return and inside the
-    /// interior tolerance.
+    /// result lies on the domain's `u = 0` side and the point on the plane `1/2048`
+    /// beyond it along `-S_u`, so `Fu` is `-1/2048` (allowed on that side) and `Fv`
+    /// is zero, past the residual early return in both modes. On that side the
+    /// opt-in's tight foot test (tangency-labs/smlib@eaa998a), which refuses an
+    /// interior result that far off, leaves the comparison reachable.
     #[test]
     fn issue_1852_good_drop_compares_the_actual_guess_distance() {
         let h = 1.0 / 2048.0;
         let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
         let s = Surface::from(Plane::from_normal(Point3::ZERO, Vec3::Z));
         let mut k = Kernel::default();
-        let result_uv = Point2::new(0.5, 0.5);
+        let result_uv = Point2::new(0.0, 0.5);
         let (result_point, su, _) =
             evaluate_1st_derivatives(&k, &s, result_uv, Side::Left, Side::Left).unwrap();
-        let pt_to_drop = result_point + h * su;
+        let pt_to_drop = result_point - h * su;
         let mut sol = SolutionEnd::new();
         sol.solution_value = 1.0;
         *sol.param_mut(0).unwrap() = result_uv.x;
@@ -3275,12 +3436,12 @@ mod tests {
 
         // The result is closer than the guess: upstream rejects it (its swapped
         // names make the guess look farther); the fix accepts it.
-        let nearer_guess = result_uv - Point2::new(0.1, 0.0);
+        let nearer_guess = result_uv + Point2::new(0.1, 0.0);
         // The guess is closer than the result: upstream accepts it; the fix
         // rejects it, as the final test intends.
-        let farther_guess = result_uv + Point2::new(h, 0.0);
+        let farther_guess = result_uv - Point2::new(h, 0.0);
         // Equidistant: both accept.
-        let equal_guess = result_uv + Point2::new(2.0 * h, 0.0);
+        let equal_guess = result_uv - Point2::new(2.0 * h, 0.0);
 
         assert!(!good_drop_result(&k, &s, &domain, pt_to_drop, nearer_guess, &sol).unwrap());
         assert!(good_drop_result(&k, &s, &domain, pt_to_drop, farther_guess, &sol).unwrap());

@@ -1454,6 +1454,7 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "revolve_splits_curves_on_axis" => &mut k.fixes.revolve_splits_curves_on_axis,
         "stitch_solid_nests_cavities" => &mut k.fixes.stitch_solid_nests_cavities,
         "sphere_small_circle_not_touching" => &mut k.fixes.sphere_small_circle_not_touching,
+        "ssi_low_angle_start_on_probation" => &mut k.fixes.ssi_low_angle_start_on_probation,
         "curve_tight_box_interval_knots" => &mut k.fixes.curve_tight_box_interval_knots,
         "fillet_tangent_point_one_sided_step" => &mut k.fixes.fillet_tangent_point_one_sided_step,
         "fillet_rails_meet_at_one_end_point" => &mut k.fixes.fillet_rails_meet_at_one_end_point,
@@ -1461,12 +1462,16 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
         "fillet_3x2_mixed_concave_side_edge" => &mut k.fixes.fillet_3x2_mixed_concave_side_edge,
         "fillet_3x2_tangent_side_edge_roles" => &mut k.fixes.fillet_3x2_tangent_side_edge_roles,
+        "fillet_mitre_concave_face_corners" => &mut k.fixes.fillet_mitre_concave_face_corners,
+        "fillet_mitre_gap_patch" => &mut k.fixes.fillet_mitre_gap_patch,
         "fillet_nx1_tangent_side_edge_same_convexity" => {
             &mut k.fixes.fillet_nx1_tangent_side_edge_same_convexity
         }
         "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
         "fillet_rail_end_on_continued_surface" => &mut k.fixes.fillet_rail_end_on_continued_surface,
         "fillet_cliff_overflow" => &mut k.fixes.fillet_cliff_overflow,
+        "offset_extension_as_itself" => &mut k.fixes.offset_extension_as_itself,
+        "fillet_run_on_past_far_end_only" => &mut k.fixes.fillet_run_on_past_far_end_only,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
@@ -1475,7 +1480,13 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
 
 /// Runs `case` on solidcore.
 pub fn run_rust(case: &Case) -> Run {
-    let mut k = Kernel::default();
+    run_rust_on(Kernel::default(), case)
+}
+
+/// Runs `case` on `k` (its `fixes` already set; the case's own `fixes` are turned on
+/// after them), for drivers that pick the kernel's fixes themselves (the
+/// `solidcraft_bench` example).
+pub fn run_rust_on(mut k: Kernel, case: &Case) -> Run {
     for fix in &case.fixes {
         if let Err(msg) = enable_fix(&mut k, fix) {
             return Run::Error(msg);
