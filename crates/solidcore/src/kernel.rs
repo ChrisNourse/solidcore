@@ -386,6 +386,8 @@ pub struct UpstreamFixes {
     pub sheet_sweep_joins_profile_wires: bool,
     /// `FindPolygonGuess` keeps a suspicious control-net triangle guess as a candidate against the nearest control point's, and returns the nearer one on the surface, so a rational surface whose control points are farther apart than its neighbouring parts does not lose a good guess (WR-444, #1164).
     pub point_solve_keeps_triangle_guess: bool,
+    /// `sm_GoodDropResult`'s last test compares the distance from the point to the drop's actual guess with the distance to its result, rejecting only a result farther than the guess, where upstream stores the result distance in `dDsqGuess` and the guess distance in `dDsqResult` and so rejects a drop that improved on the guess (WR-56, #1852; `plan/upstream-issues/WR-56--addendum-2026-10-31-good-drop-distances.md`). Off by default for pinned C++ parity.
+    pub surface_drop_checks_actual_guess_distance: bool,
     /// `SmFilletVertex::CalcSetBackVert` measures a corner setback from the vertex `GetStartVertex()` marks over the edge's own interval, not from `GetVertex()` over the curve's natural interval, so an edge whose primary edge use runs against its curve is not measured from its far end (WR-445, #1169).
     pub fillet_setback_from_start_vertex: bool,
     /// `CreateSphereFromArcs` also makes the sphere through four arcs of one centre and radius that close a loop (a corner where four equal rounds meet, such as a pyramid's apex), where upstream's "only works for 3 now" refuses and the corner falls back to an approximating blend (WR-502; SolidCraft oracle case 37).

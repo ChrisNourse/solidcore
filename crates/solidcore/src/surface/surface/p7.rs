@@ -66,8 +66,10 @@
 //!   bit instead, WR-384); `SmSSGlobalSolver::BranchMayContainAnswers` returns
 //!   `SM_SUCCESS` (that is, `FALSE`) for a node outside its face and `NER`'s status
 //!   (non-zero: `TRUE`) for a missing patch; `sm_GoodDropResult` compares the guess and
-//!   result distances with swapped names; `FindDegenParamForDirection` compares a
-//!   sample fraction with the parameter `dS`.
+//!   result distances with swapped names (the opt-in
+//!   `Kernel::fixes.surface_drop_checks_actual_guess_distance` compares the actual
+//!   distances, WR-56); `FindDegenParamForDirection` compares a sample fraction with
+//!   the parameter `dS`.
 //! - **Projection curve class.** `CreateParallelProjectionCurves` takes a [`Curve`] for
 //!   upstream's `const SmBSplineCurve&`; a curve outside the `SmBSplineCurve` classes
 //!   (B-spline, line, ellipse, hyperbola, parabola), which upstream's type rules out,
@@ -2627,6 +2629,8 @@ pub fn check_seam_drop<S: SurfaceEvaluate + ?Sized>(
 
 /// Whether a local point drop from `guess_uv` (solution value `sol_value` at
 /// `sol_uv`) converged well enough to skip the global solve (`sm_GoodDropResult`).
+/// With `Kernel::fixes.surface_drop_checks_actual_guess_distance` the final
+/// comparison uses the actual guess and result distances (WR-56, #1852).
 ///
 /// # Errors
 ///
@@ -2696,13 +2700,22 @@ pub fn good_drop_result<S: SurfaceEvaluate + ?Sized>(
     }
 
     // One more: if the solution 3d point is farther than the guess (upstream's names
-    // are swapped).
+    // are swapped; the opt-in fix compares the actual distances).
     let mut guess_3d = Vec3::UNDEF;
     if let Some(p) = ignored(surface.evaluate_point(k, guess_uv))? {
         guess_3d = p;
     }
-    let dsq_guess = pt_to_drop.distance_squared(srf_point);
-    let dsq_result = pt_to_drop.distance_squared(guess_3d);
+    let (dsq_guess, dsq_result) = if k.fixes.surface_drop_checks_actual_guess_distance {
+        (
+            pt_to_drop.distance_squared(guess_3d),
+            pt_to_drop.distance_squared(srf_point),
+        )
+    } else {
+        (
+            pt_to_drop.distance_squared(srf_point),
+            pt_to_drop.distance_squared(guess_3d),
+        )
+    };
     if dsq_result > dsq_guess {
         return Ok(false);
     }
@@ -3186,5 +3199,47 @@ mod tests {
         let d = s.natural_uv_domain_if_built();
         let v = compute_inward_vector(k, &s, d.min()).unwrap();
         assert!((v.length() - 1.0).abs() < 1e-12);
+    }
+
+    /// tangency-labs/solidcore#1852 (WR-56): `sm_GoodDropResult` stores the result
+    /// distance in `dDsqGuess` and the guess distance in `dDsqResult`, so its last
+    /// test rejects a drop that improved on the guess. The opt-in
+    /// `Kernel::fixes.surface_drop_checks_actual_guess_distance` compares the actual
+    /// guess and result distances. Every case reaches the final comparison: the
+    /// point lies on the plane, `1/2048` from the result along `S_u`, so `Fu` is
+    /// `1/2048` and `Fv` is zero, past the residual early return and inside the
+    /// interior tolerance.
+    #[test]
+    fn issue_1852_good_drop_compares_the_actual_guess_distance() {
+        let h = 1.0 / 2048.0;
+        let domain = Extent2d::from_bounds(0.0, 0.0, 1.0, 1.0);
+        let s = Surface::from(Plane::from_normal(Point3::ZERO, Vec3::Z));
+        let mut k = Kernel::default();
+        let result_uv = Point2::new(0.5, 0.5);
+        let (result_point, su, _) =
+            evaluate_1st_derivatives(&k, &s, result_uv, Side::Left, Side::Left).unwrap();
+        let pt_to_drop = result_point + h * su;
+        let mut sol = SolutionEnd::new();
+        sol.solution_value = 1.0;
+        *sol.param_mut(0).unwrap() = result_uv.x;
+        *sol.param_mut(1).unwrap() = result_uv.y;
+
+        // The result is closer than the guess: upstream rejects it (its swapped
+        // names make the guess look farther); the fix accepts it.
+        let nearer_guess = result_uv - Point2::new(0.1, 0.0);
+        // The guess is closer than the result: upstream accepts it; the fix
+        // rejects it, as the final test intends.
+        let farther_guess = result_uv + Point2::new(h, 0.0);
+        // Equidistant: both accept.
+        let equal_guess = result_uv + Point2::new(2.0 * h, 0.0);
+
+        assert!(!good_drop_result(&k, &s, &domain, pt_to_drop, nearer_guess, &sol).unwrap());
+        assert!(good_drop_result(&k, &s, &domain, pt_to_drop, farther_guess, &sol).unwrap());
+        assert!(good_drop_result(&k, &s, &domain, pt_to_drop, equal_guess, &sol).unwrap());
+
+        k.fixes.surface_drop_checks_actual_guess_distance = true;
+        assert!(good_drop_result(&k, &s, &domain, pt_to_drop, nearer_guess, &sol).unwrap());
+        assert!(!good_drop_result(&k, &s, &domain, pt_to_drop, farther_guess, &sol).unwrap());
+        assert!(good_drop_result(&k, &s, &domain, pt_to_drop, equal_guess, &sol).unwrap());
     }
 }
