@@ -11,6 +11,7 @@
 //! | `new_brep_for_caller` (crate)   | the same constructor under a reserved caller identity |
 //! | [`copy_brep`]                   | `SmBrep::SmBrep(const SmBrep&, SmCopyBrepMap*, SmCopyBrepMap*, SmBoolean, SmBoolean)` |
 //! | [`api_brep_copy`]               | `SmApiBrepCopy`                                  |
+//! | [`brep_copy`]                   | `SmApiBrepCopy` for a caller without notification state (the B-rep's own naming) |
 //! | [`copy_vertices`], [`copy_vertices_with_context`], [`CopySource`] | `SmBrep::CopyVertices`                           |
 //! | [`delete_face`], [`DeleteFaceOptions`] | `SmBrep::DeleteFace`                      |
 //! | [`remove_slit_loops_where_solids_touch`] | not upstream: the fork's `SmBrep::RemoveSlitLoopsWhereSolidsTouch` (issue #746) |
@@ -154,8 +155,8 @@ use crate::topology::{
 
 const OP: &str = "topology::brep::p3";
 
-/// Upstream `SM_ERR_ASSERT_FAILURE` (`SmMessages.h`).
-const SM_ERR_ASSERT_FAILURE: i32 = 1005;
+// Upstream `SM_ERR_ASSERT_FAILURE` (`SmMessages.h`).
+use crate::error::SM_ERR_ASSERT_FAILURE;
 
 /// Upstream dereferences null here (no `NER`): the FFI guard rejects the input.
 const fn null_deref(reason: &'static str) -> SolidError {
@@ -255,8 +256,8 @@ impl Brep {
 
 // ---- shells and regions (topology.shell) ----------------------------------------------------
 
-/// `SmBoolean` `TRUE`.
-const TRUE: i32 = 1;
+// `SmBoolean` `TRUE`.
+use crate::error::SM_TRUE as TRUE;
 
 /// `SmRegion::SetIsVoid`.
 fn region_set_is_void(b: &mut Brep, r: RegionId, is_void: i32) -> Result<()> {
@@ -1442,6 +1443,46 @@ pub fn api_brep_copy(
     Ok(copy)
 }
 
+/// `SmApiBrepCopy(pBrep, rpResult)` for a caller without notification state of its
+/// own: a standalone copy of `brep` that owns its topology and geometry, as a body
+/// built by [`new_brep`] and the primitives does, with `brep`'s surface types kept (the
+/// copy constructor without maps, `bAddAnalytics = FALSE`). Mutating, transforming or
+/// querying the copy never touches `brep`, and `brep` keeps its own attributes.
+///
+/// The copy's objects are named the B-rep's own way ([`NamingScheme::Notify`],
+/// [`crate::topology::loopuse::notify_ref`]), as a freshly built body's are, so it
+/// combines with other bodies (booleans, merges) exactly as two primitives do and
+/// [`check_brep`](crate::topology::brep::validation::check_brep) checks its owners
+/// under that naming. `brep`'s own attributes ([`Brep::add_attribute`]) go to the
+/// copy as their [`Behavior`](crate::geom::attribute::Behavior) says (SMLib's `Copy`
+/// handler: copy and reference attributes are passed on, temporary ones are not); the
+/// copy owns them.
+///
+/// (not upstream) Upstream's copy is notified through the B-rep's context; this copy
+/// keeps no records and notifies no callbacks (as the arena-only copies of the
+/// boolean list operands, `boolean::merge::p3`), so it may run inside any edit. A
+/// caller that needs the copy's notifications or names its bodies itself uses
+/// [`api_brep_copy`] with its [`NotifyEnv`].
+///
+/// [`NamingScheme::Notify`]: crate::topology::NamingScheme::Notify
+///
+/// # Errors
+///
+/// Those of [`api_brep_copy`] (the two namings are the B-rep's own and never share an
+/// attribute key).
+pub fn brep_copy(k: &mut Kernel, brep: &Brep) -> Result<Brep> {
+    use crate::topology::loopuse::notify_ref;
+    let mut state = p2::ArenaNotifyState::default();
+    let mut env = state.env(None);
+    // both B-reps under their own naming: `api_brep_copy` names the source in a
+    // private domain for the copy, so the source's attribute lists stay its own
+    let mut copy = api_brep_copy(k, &mut env, Some(brep), &notify_ref)?;
+    // (not upstream) `copy_brep` records every geometry owner under `env.key_of`,
+    // which is the Notify scheme's own identity: the copy is named as a fresh body
+    copy.set_naming(crate::topology::NamingScheme::Notify);
+    Ok(copy)
+}
+
 /// The shift [`api_brep_copy`] moves `source_key`'s keys by when they meet the keys
 /// `key_of` gives the same objects of the source (`live`), which the copy's objects
 /// get: the first multiple of `1 << 44` that moves every source key off them and
@@ -1450,7 +1491,7 @@ pub fn api_brep_copy(
 /// # Errors
 ///
 /// `InvalidInput` when no such shift exists.
-fn private_source_shift(
+pub(crate) fn private_source_shift(
     live: &[EntityRef],
     source_key: &dyn Fn(EntityRef) -> ObjectRef,
     key_of: &dyn Fn(EntityRef) -> ObjectRef,
