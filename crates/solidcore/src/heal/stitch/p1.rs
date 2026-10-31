@@ -2605,7 +2605,10 @@ fn evaluate_binormal(
 pub fn api_stitch(k: &mut Kernel, b: Option<&mut Brep>) -> Result<()> {
     let b = b.ok_or_else(|| SolidError::invalid_input(API_OP, "SmApiStitch: null B-rep"))?;
     // StitchAndOrient() with its header defaults
-    ignore_status(stitch_and_orient(k, b, -0.1, false, None, None))?;
+    ignore_status(crate::error::passed_on(
+        stitch_and_orient(k, b, -0.1, false, None, None),
+        k.fixes.brep_edit_statuses_pass_on,
+    )?)?;
     // Check manifold?
     Ok(())
 }

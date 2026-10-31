@@ -403,8 +403,10 @@ pub struct UpstreamFixes {
     /// Fillet edge-domain preparation returns copy/trim failures instead of using
     /// an untrimmed curve as the requested domain (#483). Off by default.
     pub fillet_edge_curve_domain_statuses: bool,
-    /// Offset tangent-gap checks return evaluation and closest-point errors;
-    /// a successful query without a solution keeps its existing meaning (#483).
+    /// Offset tangent-gap checks skip a sample they cannot evaluate instead of
+    /// measuring an unset point, as the fork does (`HaveTangentGaps`, tangency-labs/smlib
+    /// 4803d6d; #483, changed by #2009); `ClosestPoint`'s status stays dropped and a
+    /// successful query without a solution keeps its existing meaning.
     pub offset_tangent_gap_statuses: bool,
     /// Surface-intersection singularity alignment returns failed direction angles
     /// instead of treating them as zero (#483). Captured when the intersector is built.

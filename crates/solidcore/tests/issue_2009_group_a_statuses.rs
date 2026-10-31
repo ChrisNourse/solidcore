@@ -81,3 +81,60 @@ fn matrix_transform_passes_on_a_failed_angle() {
         }
     }
 }
+
+/// fork 4803d6d (`SmApiStitch`, `SER(pBrep->StitchAndOrient())`): an edge without
+/// curve fails the stitch. Upstream's API drops `StitchAndOrient`'s status and
+/// succeeds; the fork returns it.
+#[test]
+fn api_stitch_passes_on_a_failed_stitch_and_orient() {
+    for pass_on in [false, true] {
+        let mut k = kernel(pass_on);
+        let mut b = unit_box(&mut k);
+        let e = b.edge_list()[0];
+        b.edge_mut(e).expect("edge").curve = None;
+        let r = solidcore::heal::stitch::p1::api_stitch(&mut k, Some(&mut b));
+        if pass_on {
+            assert!(
+                matches!(
+                    r,
+                    Err(SolidError::InvalidInput {
+                        operation: "heal::stitch::p2",
+                        ..
+                    })
+                ),
+                "{r:?}"
+            );
+        } else {
+            assert!(r.is_ok(), "{r:?}");
+        }
+    }
+}
+
+/// fork 4803d6d (`SmApiProjectBrepOntoPlane`, `SER(pBrep->CalculateBoundingBox(BBox))`):
+/// a face without surface has no box. Upstream projects from an empty box; the fork
+/// returns the box's error.
+#[test]
+fn projection_onto_plane_passes_on_a_failed_box() {
+    for pass_on in [false, true] {
+        let mut k = kernel(pass_on);
+        let mut b = unit_box(&mut k);
+        let f = b.face_list()[0];
+        b.face_mut(f).expect("face").surface = None;
+        let mut out = Vec::new();
+        let r = solidcore::topology::api_projection::project_brep_onto_plane(
+            &mut k,
+            Some(&b),
+            solidcore::math::Vec3::new(0.0, 0.0, -1.0),
+            solidcore::math::Vec3::new(0.0, 0.0, 1.0),
+            &mut out,
+        );
+        let box_error = matches!(
+            r,
+            Err(SolidError::InvalidInput {
+                operation: "query::face::p1::calculate_bounding_box",
+                ..
+            })
+        );
+        assert_eq!(box_error, pass_on, "{r:?}");
+    }
+}
