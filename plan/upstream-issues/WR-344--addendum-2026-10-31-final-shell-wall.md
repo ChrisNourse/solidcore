@@ -5,12 +5,13 @@ Updates: WR-344
 `Kernel::fixes.offset_extended_edges_mated` (default `false`, upstream behaviour) now
 also refuses (`SM_ERR`/1001, operation `offset::offset_executive::p2::shell_brep`) the
 final `shell_difference` result of a manifold input when it is not a manifold solid.
-This is a refinement of the port's opt-in, not a new pinned-C++ defect: the pinned C++
-1.0.1 already refused the #1818 input with 1001, and the guard prevents the existing
-relaxation flag from turning that refusal into a broken body. The check is
+This is a refinement of the port's opt-in, not a new pinned-C++ defect: issue #1818
+reports that pinned C++ 1.0.1 already refused its input with 1001. That native case was
+not re-run for this refinement; the guard prevents the existing relaxation flag from
+turning a refusal into a broken body. The check is
 `offset_extended_edges_mated && input_is_manifold && !brep_is_manifold_solid(&shell)`
 after `make_shell_edges_exact`; it does not test `create_offset_solid`, so it covers the
-final difference result in both the solid-wall and closed-shell calls. It runs after
+final difference result with either value of `create_offset_solid`. It runs after
 `shell_difference` has consumed the input, so the refusal reports `retained_input =
 None` and `input_ownership_transferred() == true`; the early open-sheet return
 (`create_offset_solid = false`, non-manifold intermediate) and the sheet-thickening
@@ -35,5 +36,5 @@ the underlying shell, or a closed manifold zero-volume wall; those remain out of
 Test `crates/solidcore/tests/issue_1818_final_shell_wall.rs`; existing mated-only
 canaries `issue_469_extended_offset_mated_edges_not_intersected_again`,
 `issue_1795_extended_edges_mated`, and
-`issue_1476_swept_bar_shells_with_solidcraft_fixes` must stay green. Fixes
+`issue_1476_swept_bar_shells` must stay green. Fixes
 tangency-labs/solidcore#1818.

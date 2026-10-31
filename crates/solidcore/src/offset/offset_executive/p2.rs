@@ -430,7 +430,7 @@ impl OffsetExecutive {
             make_shell_edges_exact(kernel, &mut shell, notifications)?;
             // Opt-in (WR-344/#1818): the intermediate check above does not cover the
             // final difference. For a manifold input the result must still be a manifold
-            // solid; the relaxation flag must not turn the pinned C++ 1001 into a broken
+            // solid; the relaxation flag must not turn an earlier refusal into a broken
             // wall. `shell_difference` has already consumed the input, so this late
             // refusal reports no retained input (ownership transferred), like the other
             // late shell errors. The early open-sheet return above is untouched.
