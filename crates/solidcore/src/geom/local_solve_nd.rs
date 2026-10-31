@@ -355,7 +355,7 @@ impl<'a, E: EvalNFunctions + ?Sized> LocalSolveNd<'a, E> {
     }
 
     /// Opt-in, not upstream (WR-253 addendum; the fork's tangency-labs/smlib@d2757e1,
-    /// `Kernel::fixes.local_solve_nd_skips_failed_evaluations`): when `true`,
+    /// `Kernel::fixes.oscillating_skips_failed_guesses`): when `true`,
     /// [`LocalSolveNd::solve_it`] takes no value from a failed evaluation. Each step
     /// takes its equations, Jacobian and found flag from the evaluation it uses (upstream
     /// kept the unscaled point's Jacobian and found flag for a clamped-and-scaled step),

@@ -944,7 +944,7 @@ impl EvalNFunctions for GuessSphereEnfo<'_> {
 
 /// `SmLocalSolveNd(sEvalFun, &sIntervals, &sPeriodicities)` set up as both plane
 /// solves do: desired accuracy `SM_EFF_ZERO_SQ`, at most 8 total boundary hits, 30
-/// iterations; `k`'s `fixes.local_solve_nd_skips_failed_evaluations` is passed on.
+/// iterations; `k`'s `fixes.oscillating_skips_failed_guesses` is passed on.
 fn plane_local_solver<'a, E: EvalNFunctions + ?Sized>(
     k: &Kernel,
     eval: &'a mut E,
@@ -952,7 +952,7 @@ fn plane_local_solver<'a, E: EvalNFunctions + ?Sized>(
     periodicities: &'a [bool],
 ) -> LocalSolveNd<'a, E> {
     let mut ls = LocalSolveNd::new(eval, Some(intervals), Some(periodicities));
-    ls.set_skips_failed_evaluations(k.fixes.local_solve_nd_skips_failed_evaluations);
+    ls.set_skips_failed_evaluations(k.fixes.oscillating_skips_failed_guesses);
     ls.set_desired_accuracy(EFF_ZERO_SQ);
     ls.set_boundary_handler(BoundaryHandler::TotalBoundaryHits, 8);
     ls.set_maximum_iterations(30);

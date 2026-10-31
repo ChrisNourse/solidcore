@@ -3,8 +3,8 @@
 //! bar/boss arc got a UV trim with coincident control points. Root cause (traced by tdamsma on
 //! #1945): `SmLocalSolveNd::SolveIt` kept the unscaled point's Jacobian for a clamped-and-scaled
 //! step, so a near-tangent SSI's end landed 1.6e-8 off and the rail trim kept a 3.1e-8 span. The
-//! fork's tangency-labs/smlib@d2757e1 fixes it; the port carries it as
-//! `fixes.local_solve_nd_skips_failed_evaluations`.
+//! fork's tangency-labs/smlib@d2757e1 fixes it; the port carries it under WR-253's
+//! `fixes.oscillating_skips_failed_guesses`, with the commit's 1-D part.
 #![allow(clippy::all)]
 use solidcore::blend::fillet_executive::session::FilletSession;
 use solidcore::blend::fillet_solver::p1::FilletSurfaceGeneratorType;
@@ -153,7 +153,7 @@ fn run(reach: bool, nd_fix: bool) -> (f64, f64, Vec<String>) {
     let mut k = Kernel::default();
     k.fixes.fillet_through_extended_rail_end = true;
     k.fixes.fillet_trace_reaches_rails = reach;
-    k.fixes.local_solve_nd_skips_failed_evaluations = nd_fix;
+    k.fixes.oscillating_skips_failed_guesses = nd_fix;
     let b = base(&mut k);
     let mut b1 = round(&mut k, &b, &ARC, 2.0).unwrap();
     let mut b2 = round(&mut k, &b1, &TOP, 2.0).unwrap();
