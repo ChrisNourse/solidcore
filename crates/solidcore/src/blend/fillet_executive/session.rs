@@ -3374,6 +3374,38 @@ impl crate::blend::fillet_solver::p5::RailClassificationContext for SessionRollO
     fn corner_type(&self, corner: FilletCornerId) -> Result<FilletCornerType> {
         self.classification().corner_type(corner)
     }
+    fn corner_of_vertex(&self, vertex: VertexId) -> Result<Option<FilletCornerId>> {
+        Ok(session_corner_of_vertex(self.executive, vertex))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn classify_free_curve(
+        &mut self,
+        k: &Kernel,
+        target: &mut Brep,
+        pseudo: &Brep,
+        face: FaceId,
+        curve: &crate::curve::curve::Curve,
+        interval: crate::geom::extent1d::Extent1d,
+        uv_curve: Option<&crate::curve::curve::Curve>,
+        zone_tol_3d: f64,
+    ) -> Result<
+        Vec<
+            crate::intersect::curve_class::p1::CurveInterval<
+                crate::blend::fillet_classification::FilletClassObject,
+            >,
+        >,
+    > {
+        self.classification().classify_free_curve(
+            k,
+            target,
+            pseudo,
+            face,
+            curve,
+            interval,
+            uv_curve,
+            zone_tol_3d,
+        )
+    }
     fn corners(&self) -> CornerLookup<'_> {
         CornerLookup::table(self.corners)
     }
@@ -3579,6 +3611,32 @@ impl SolverGeometryAccess<FilletObject> for SessionObjects<'_> {
             &mut self.pseudo,
             &mut context,
             true,
+        )
+    }
+    fn geometry_end_sections_fit(
+        &mut self,
+        k: &mut Kernel,
+        solver: FilletObject,
+        executive: &FilletExecutive<FilletObject>,
+    ) -> Result<bool> {
+        let FilletObject::Solver(id) = solver else {
+            return Err(invalid("object is not a solver"));
+        };
+        let solver = self
+            .solvers
+            .get_mut(id.0 as usize)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| invalid("solver is not live in this session"))?;
+        let mut context = SessionRollOver {
+            corners: &mut self.corners,
+            executive,
+        };
+        FilletSolver::end_sections_fit_their_faces_with_ops(
+            live_solver_ops(solver),
+            k,
+            self.target,
+            &mut self.pseudo,
+            &mut context,
         )
     }
     fn geometry_blend_adds_material(
@@ -4330,8 +4388,11 @@ impl SessionObjects<'_> {
         // in this case we can set FilletVertex and SideFilletEdge shapes
         // without having the filletSurface - do so
 
-        // set filletVertex->Positions
-        crate::error::ignore_status(self.calc_nx1_corner_vert_geom(k, id))?;
+        // set filletVertex->Positions (fork 66b02de passes this on: SER)
+        crate::error::ignore_status(crate::error::passed_on(
+            self.calc_nx1_corner_vert_geom(k, id),
+            k.fixes.fillet_statuses_pass_on,
+        )?)?;
 
         // set FilletSideEdge->Curves
         for edge in [gaps.edge1, gaps.edge2] {
@@ -4365,7 +4426,11 @@ impl SessionObjects<'_> {
                 Some(&mut note),
             );
             replay_corner_error(&mut executive.error, &note);
-            crate::error::ignore_status(result)?;
+            // fork 66b02de passes this on (SER)
+            crate::error::ignore_status(crate::error::passed_on(
+                result,
+                k.fixes.fillet_statuses_pass_on,
+            )?)?;
         }
 
         // When proposing an extended surface
@@ -4388,8 +4453,9 @@ impl SessionObjects<'_> {
             .corners
             .get(id.0 as usize)
             .ok_or_else(|| invalid("corner is not live"))?;
-        // get extendedSurface/OtherSideEdge coincidence to within tolerance
-        let found = crate::error::ignored(
+        // get extendedSurface/OtherSideEdge coincidence to within tolerance (fork
+        // 66b02de passes this on: SER)
+        let found = crate::error::ignored(crate::error::passed_on(
             surface.simple_coincidence_checker::<crate::topology::ObjectHandle>(
                 k,
                 &surface.natural_uv_domain_with_nurb(k)?,
@@ -4399,7 +4465,8 @@ impl SessionObjects<'_> {
                 false,
                 [None, None],
             ),
-        )?
+            k.fixes.fillet_statuses_pass_on,
+        )?)?
         .flatten()
         .is_some();
         // when extendedSurface/OtherSideEdge are not coincident
