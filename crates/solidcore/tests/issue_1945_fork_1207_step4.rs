@@ -284,7 +284,7 @@ fn run(nd_fix: bool) -> (usize, usize, usize, f64, Vec<String>) {
             1.0,
         )
         .unwrap();
-        s.create_corners(&mut k, None).unwrap();
+        s.create_corners(&k, None).unwrap();
         s.set_mark_corner_patches(false);
         s.do_filleting(&mut k, None).unwrap();
     }

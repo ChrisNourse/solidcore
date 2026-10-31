@@ -5,7 +5,14 @@
 //! step, so a near-tangent SSI's end landed 1.6e-8 off and the rail trim kept a 3.1e-8 span. The
 //! fork's tangency-labs/smlib@d2757e1 fixes it; the port carries it under WR-253's
 //! `fixes.oscillating_skips_failed_guesses`, with the commit's 1-D part.
-#![allow(clippy::all)]
+#![allow(
+    clippy::all,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    missing_docs
+)]
 use solidcore::blend::fillet_executive::session::FilletSession;
 use solidcore::blend::fillet_solver::p1::FilletSurfaceGeneratorType;
 use solidcore::boolean::api_brep as sm;
