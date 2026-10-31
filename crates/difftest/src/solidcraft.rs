@@ -1423,8 +1423,13 @@ fn measure(k: &Kernel, b: &mut Brep) -> Result<Measured, SolidError> {
 fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
     let field = match name {
         "sweep_frame_on_planar_path_normal" => &mut k.fixes.sweep_frame_on_planar_path_normal,
+        "imprint_extends_edge_to_proto_vertex" => &mut k.fixes.imprint_extends_edge_to_proto_vertex,
+        "imprint_extension_keeps_analytic_curve" => {
+            &mut k.fixes.imprint_extension_keeps_analytic_curve
+        }
         "delete_vertex_joins_seam_iso_curve" => &mut k.fixes.delete_vertex_joins_seam_iso_curve,
         "cover_refuses_folded_continuation" => &mut k.fixes.cover_refuses_folded_continuation,
+        "fillet_cleanup_removes_input_slits" => &mut k.fixes.fillet_cleanup_removes_input_slits,
         "cover_wraps_across_closed_seam" => &mut k.fixes.cover_wraps_across_closed_seam,
         "fillet_refuse_non_manifold_result" => &mut k.fixes.fillet_refuse_non_manifold_result,
         "fillet_refuse_crossing_rails" => &mut k.fixes.fillet_refuse_crossing_rails,
@@ -1454,7 +1459,16 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
         "fillet_rails_meet_at_one_end_point" => &mut k.fixes.fillet_rails_meet_at_one_end_point,
         "fillet_nx1_tangent_side_edge" => &mut k.fixes.fillet_nx1_tangent_side_edge,
         "fillet_nx1_tangent_corner_edge" => &mut k.fixes.fillet_nx1_tangent_corner_edge,
+        "fillet_3x2_mixed_concave_side_edge" => &mut k.fixes.fillet_3x2_mixed_concave_side_edge,
+        "fillet_3x2_tangent_side_edge_roles" => &mut k.fixes.fillet_3x2_tangent_side_edge_roles,
+        "fillet_mitre_concave_face_corners" => &mut k.fixes.fillet_mitre_concave_face_corners,
+        "fillet_nx1_tangent_side_edge_same_convexity" => {
+            &mut k.fixes.fillet_nx1_tangent_side_edge_same_convexity
+        }
         "fillet_trace_reaches_rails" => &mut k.fixes.fillet_trace_reaches_rails,
+        "fillet_rail_end_on_continued_surface" => &mut k.fixes.fillet_rail_end_on_continued_surface,
+        "fillet_cliff_overflow" => &mut k.fixes.fillet_cliff_overflow,
+        "offset_extension_as_itself" => &mut k.fixes.offset_extension_as_itself,
         _ => return Err(format!("unknown `fixes` entry `{name}`")),
     };
     *field = true;
@@ -1463,7 +1477,13 @@ fn enable_fix(k: &mut Kernel, name: &str) -> Result<(), String> {
 
 /// Runs `case` on solidcore.
 pub fn run_rust(case: &Case) -> Run {
-    let mut k = Kernel::default();
+    run_rust_on(Kernel::default(), case)
+}
+
+/// Runs `case` on `k` (its `fixes` already set; the case's own `fixes` are turned on
+/// after them), for drivers that pick the kernel's fixes themselves (the
+/// `solidcraft_bench` example).
+pub fn run_rust_on(mut k: Kernel, case: &Case) -> Run {
     for fix in &case.fixes {
         if let Err(msg) = enable_fix(&mut k, fix) {
             return Run::Error(msg);

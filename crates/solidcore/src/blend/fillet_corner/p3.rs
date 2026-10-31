@@ -54,6 +54,11 @@
 //!   [`crate::blend::fillet_corner::p2`]'s, `SmFilletEdge::MakeFilletEdge` is
 //!   `FilletBrep::make_fillet_edge` and `ReCalcFilletGeom` is
 //!   `FilletBrep::re_calc_fillet_geom` on the corner's solvers.
+//! - **Face sides** (not upstream; WR-613, the fork's tangency-labs/smlib@7fd9fb0): with
+//!   `Kernel::fixes.corner_patch_face_side_twist`, `CreateCornerPatch` marks the
+//!   ordered edges that have an original face and builds its patch with
+//!   [`BSplineSurface::create_corner_blend_on_faces`]; without it the marks are `0`,
+//!   upstream's `CreateCornerBlend`.
 //! - **Nx2 adjustments.** The replaced corner edge of the Nx2 topology adjustment is
 //!   deleted from the pseudo B-rep (`FilletBrep::delete_fillet_edge`, upstream's
 //!   `delete`). The tangent adjustment ignores the statuses of `CalcCornerVertGeom`,
@@ -1415,6 +1420,11 @@ impl FilletCorner {
             let mut orients: Vec<OrientType> = Vec::new();
             let mut ordered_surfs: Vec<Option<Surface>> = Vec::new();
 
+            // Not upstream (WR-613; tangency-labs/smlib@7fd9fb0): the edges along a face
+            // of the body (an original face), bit k for ordered edge k: the patch meets
+            // those exactly at its corners
+            let mut face_sides: u32 = 0;
+
             // for every edge - get edge shape as (neighborFace->Surface,UVTrimCurve) pair
             for ii in 0..total_edges {
                 let fe = *self
@@ -1435,6 +1445,12 @@ impl FilletCorner {
                             .0
                             .and_then(bspline_part);
                         base_surface.clone_from(&env.target.face(orig_face)?.surface);
+                        if env.k.fixes.corner_patch_face_side_twist {
+                            face_sides |= u32::try_from(ii)
+                                .ok()
+                                .and_then(|ii| 1u32.checked_shl(ii))
+                                .unwrap_or(0);
+                        }
                     } else {
                         // no Original Face branch - curve is only connected to filletSurfaces
                         // use primaryEdgeuse to get (neighborFace,UVTrimCurve) pair
@@ -1510,7 +1526,7 @@ impl FilletCorner {
                 .iter()
                 .map(|s| s.as_ref().map(|surface| BlendNeighbour { surface }))
                 .collect();
-            let blends = BSplineSurface::create_corner_blend(
+            let blends = BSplineSurface::create_corner_blend_on_faces(
                 env.k,
                 &curves_3d,
                 &orients,
@@ -1519,6 +1535,7 @@ impl FilletCorner {
                 self.approx_tol_3d,
                 self.tangency_tol_radians,
                 !self.extended_surface_patch,
+                face_sides,
             )?;
 
             // store New FilletSurface in m_vSurfaces
@@ -3004,17 +3021,33 @@ pub(crate) fn join_with(
     other: &mut Curve,
     other_at_end: bool,
 ) -> Result<()> {
+    join_with_gap(k, this, this_at_end, other, other_at_end, None)
+}
+
+/// [`join_with`] with `JoinWith`'s optional `pGapTolerance` (`None`: the curves'
+/// default).
+pub(crate) fn join_with_gap(
+    k: &Kernel,
+    this: &mut Curve,
+    this_at_end: bool,
+    other: &mut Curve,
+    other_at_end: bool,
+    gap_tolerance: Option<f64>,
+) -> Result<()> {
     let owner = this.owner();
     match this.kind_mut() {
-        CurveKind::Line(l) => {
-            l.join_with(u64::from(this_at_end), other, u64::from(other_at_end), None)
-        }
+        CurveKind::Line(l) => l.join_with(
+            u64::from(this_at_end),
+            other,
+            u64::from(other_at_end),
+            gap_tolerance,
+        ),
         CurveKind::Ellipse(e) => e.join_with(
             k,
             u64::from(this_at_end),
             other,
             u64::from(other_at_end),
-            None,
+            gap_tolerance,
             owner,
         ),
         kind => {
@@ -3022,7 +3055,7 @@ pub(crate) fn join_with(
                 bspline_part_mut(kind).ok_or_else(|| SolidError::null_pointer(OP_3X2))?;
             let other_base = bspline_part_mut(other.kind_mut())
                 .ok_or_else(|| SolidError::null_pointer(OP_3X2))?;
-            this_base.join_with(k, this_at_end, other_base, other_at_end, None)
+            this_base.join_with(k, this_at_end, other_base, other_at_end, gap_tolerance)
         }
     }
 }
