@@ -15,7 +15,8 @@
 //! | `extend_surface` (private)                            | `sm_ExtendSurface` (static)                      |
 //! | `extend_as_itself` (private)                          | the fork's `sm_ExtendAsItself` (static; WR-633, WR-650) |
 //! | `rot_turn`, `arc_spans`, `turn_about`, `radial` (private) | the fork's `sm_GetRotTurn`, `sm_ArcSpans`, `sm_TurnAbout`, `sm_Radial` (WR-650) |
-//! | `generator_is_circle`, `continues_as_itself` (private) | the fork's `sm_GeneratorIsCircle` (tangency-labs/smlib@43fd6b6), the `bAsItself` test of `sm_ExtendSurface` |
+//! | [`OffsetSurface::continues_as_itself`], [`OffsetSurface::continue_as_itself`] | the fork's `ContinuesAsItself`, `ContinueAsItself` (tangency-labs/smlib@db4a655) |
+//! | `generator_is_circle`, `extends_as_itself` (private) | the fork's `sm_GeneratorIsCircle` (tangency-labs/smlib@43fd6b6), the `bAsItself` test of `sm_ExtendSurface` |
 //! | [`OffsetSurface::knots`]                              | `GetKnots`                                       |
 //! | [`OffsetSurface::evaluate_normal`], [`OffsetSurface::evaluate_normal_extending`] | `EvaluateNormal` |
 //! | [`OffsetSurface::evaluate_point`], [`OffsetSurface::evaluate_point_extending`] | `EvaluatePoint`    |
@@ -817,6 +818,65 @@ impl OffsetSurface {
             true,
             SS_UNKNOWN,
         )?))
+    }
+
+    /// The fork's `SmOffsetSurface::ContinuesAsItself` (tangency-labs/smlib@db4a655):
+    /// whether `surface` continues as itself past its domain ([`Self::continue_as_itself`]):
+    /// a cylinder, cone, sphere or torus.
+    #[must_use]
+    pub fn continues_as_itself(surface: &Surface) -> bool {
+        matches!(
+            surface.kind(),
+            SurfaceKind::Cone(_) | SurfaceKind::Sphere(_) | SurfaceKind::Torus(_)
+        )
+    }
+
+    /// The fork's `SmOffsetSurface::ContinueAsItself` (tangency-labs/smlib@db4a655):
+    /// `surface` ([`Self::continues_as_itself`]) continued as itself over at least `lo` to
+    /// `hi`, as the fillet's offset surfaces continue their bases (`sm_ExtendAsItself`):
+    /// each end span's rational arc or straight line carried on, the same surface at the
+    /// same parameters over its own domain, its analytic kind given back
+    /// (`CopyAndAddAnalytics`). Round its axis it reaches no further than closing the
+    /// turn: asked for more, it closes it. Within its own domain the result is a copy.
+    ///
+    /// # Errors
+    ///
+    /// `SM_ERR` for a surface that does not continue as itself; those of the copy, the
+    /// turn and the extension.
+    pub fn continue_as_itself(
+        k: &Kernel,
+        surface: &Surface,
+        lo: Point2,
+        hi: Point2,
+    ) -> Result<Surface> {
+        if !Self::continues_as_itself(surface) {
+            return Err(SolidError::sm_err(OP_EXTEND));
+        }
+        let domain = surface.natural_uv_domain_with_nurb(k)?;
+        if domain.contains_point(lo, 0.0) && domain.contains_point(hi, 0.0) {
+            return surface.copy(k);
+        }
+        let turn = rot_turn(revolution_of(k, surface)?.0)?;
+        let mut lo = Point2::new(
+            smos_min(lo.x, domain.min().x),
+            smos_min(lo.y, domain.min().y),
+        );
+        let mut hi = Point2::new(
+            smos_max(hi.x, domain.max().x),
+            smos_max(hi.y, domain.max().y),
+        );
+        let (rot_lo, rot_hi) = if turn.rot == 0 {
+            (&mut lo.x, &mut hi.x)
+        } else {
+            (&mut lo.y, &mut hi.y)
+        };
+        let close = *rot_hi - *rot_lo >= turn.hi - turn.lo;
+        if close {
+            *rot_lo = turn.lo;
+            *rot_hi = turn.hi;
+        }
+        let extended = extend_as_itself(k, surface, lo, hi, close)?;
+        extended.copy_and_add_analytics(k)
     }
 
     /// Exact evaluation copy (no knot fix-up) that takes the current extension, pending
@@ -2200,6 +2260,24 @@ fn extend_toward(k: &Kernel, surface: &Surface, uv: Point2) -> Result<Surface> {
     Ok(Surface::from(BSplineSurface::from_gw_nurb(&ext.surface)))
 }
 
+/// `smos_Min(a, b)`: `a < b ? a : b`.
+fn smos_min(a: f64, b: f64) -> f64 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `smos_Max(a, b)`: `a > b ? a : b`.
+fn smos_max(a: f64, b: f64) -> f64 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
 /// `a > b` (false for a `NaN` operand), as the fork's `!(a > b)` tests read it.
 fn gt(a: f64, b: f64) -> bool {
     a.partial_cmp(&b) == Some(core::cmp::Ordering::Greater)
@@ -2321,10 +2399,10 @@ fn revolution_of<'a>(
     }
 }
 
-/// Whether `surface` continues as itself (`extend_as_itself`): a cylinder, cone, sphere or
-/// torus, or (the fork's tangency-labs/smlib@43fd6b6) a surface of revolution whose
+/// Whether `sm_ExtendSurface` extends `surface` as itself (`extend_as_itself`, its
+/// `bAsItself`): a cylinder, cone, sphere or torus, or (the fork's tangency-labs/smlib@43fd6b6) a surface of revolution whose
 /// generator is an arc of one circle. A NURB that cannot be made is not one.
-pub(crate) fn continues_as_itself(k: &Kernel, surface: &Surface) -> bool {
+fn extends_as_itself(k: &Kernel, surface: &Surface) -> bool {
     match surface.kind() {
         SurfaceKind::Cone(_) | SurfaceKind::Sphere(_) | SurfaceKind::Torus(_) => true,
         SurfaceKind::SurfOfRevolution(_) => match surface.kind_with_nurb(k) {
@@ -2916,7 +2994,7 @@ fn extend_from_base(
     // So does (the fork's tangency-labs/smlib@43fd6b6) a surface of revolution whose
     // generator is a circle (a round's cross section revolved, as SMLib's concave round of an
     // arc is): its generator carried on as its own circle.
-    let as_itself = k.fixes.offset_extension_as_itself && continues_as_itself(k, base);
+    let as_itself = k.fixes.offset_extension_as_itself && extends_as_itself(k, base);
     // WR-650 (the fork's tangency-labs/smlib@b298cc2): round the axis such a surface is a
     // circle, and its extension reaches no further than closing the turn (half the gap past
     // either end, `sm_RotTurn`); from there on that direction is periodic, its parameters
@@ -4238,7 +4316,7 @@ mod tests {
         let mut k = Kernel::default();
         let base = revolved_semicircle();
         assert!(matches!(base.kind(), SurfaceKind::SurfOfRevolution(_)));
-        assert!(super::continues_as_itself(&k, &base));
+        assert!(extends_as_itself(&k, &base));
         k.fixes.offset_extension_as_itself = true;
         let fixed = wr650_off_surface_with(base.clone(), 0.5, true, tube);
         assert!(fixed < 1e-9, "the continuation is {fixed} off the tube");
