@@ -100,6 +100,32 @@ covered by the identical-ellipse reduction. In particular the existing
 its existing behavior. Identical circles may have an antipodal continuum, whose
 joint-parameter range representation is still a maintainer question.
 
+## Shared construction and class-specific completeness
+
+The finite All paths use the same constrained-extrema decomposition: corners,
+stationary roots along each boundary edge, and coupled stationary points in the
+interior. Their selectors establish which completeness proof applies; they do
+not select fixture names or retry a failed construction. Affine spans use
+convexity to reduce maxima to corners. Identical coordinate-monotone NURBS use
+their single-span monotonicity proof. Identical noncircular ellipses additionally
+need every edge root and the principal-axis antipode theorem derived above.
+That theorem does not hold for unrelated curved pairs or circular continua.
+A general curved-pair extension must establish complete edge and coupled-interior
+root coverage within this decomposition, rather than add an input-specific
+candidate recipe or silently generalize the identical-conic proof.
+
+Native `Definition`, `Query` and `Candidate` arithmetic and the final All
+accumulator are shared. Ellipse root-location uncertainty remains separate:
+before a candidate enters that accumulator, its root objective upper bound must
+fit within the feasible representative's own enclosure. The accumulator then
+requires an actually returned point bound to cover the largest retained
+candidate upper bound, and checks every retained candidate's representation
+under the established duplicate and retention rules. These implications also
+cover every admitted ellipse root objective. The ellipse-specific second
+returned-upper loop duplicated a weaker check and is removed; the shared guard
+remains the single owner of this final coverage check. No retention, tolerance,
+selection or completeness condition is weakened.
+
 ## Primary reference and scope of inference
 
 [Eberly, *Distance from a Point to an Ellipse, an Ellipsoid, or a Hyperellipsoid*,

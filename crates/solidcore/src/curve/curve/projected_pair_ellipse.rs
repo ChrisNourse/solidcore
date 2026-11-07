@@ -609,7 +609,6 @@ pub(super) fn solve<O: SolutionObject>(
         .fold(target.map_or(0.0, f64::abs), f64::max);
     let exclude = (Ivl::from(lower) - Ivl::from(tolerance)).lo;
     let mut retained = Vec::new();
-    let mut required_upper = 0.0_f64;
     for maximum in maxima {
         // A certified root-objective bound can exclude an entire local maximum
         // from the retention band before constructing its rounded representative.
@@ -634,26 +633,11 @@ pub(super) fn solve<O: SolutionObject>(
                 ));
             }
         }
-        required_upper = required_upper.max(maximum.objective.hi);
         retained.push(candidate);
     }
-    let answers = super::projected_pair_all::accumulate(&query, retained, tolerance, handles)?;
-    if !answers.is_empty() {
-        let mut returned_upper = 0.0_f64;
-        for answer in answers.as_slice() {
-            let point = query.candidate(answer.start.param(0)?, answer.start.param(1)?)?;
-            returned_upper = returned_upper.max(point.upper);
-        }
-        // Reported-value retention may reorder numerically indistinguishable
-        // candidates. A discarded candidate's rounding cannot justify the
-        // returned set; at least one actual returned point must cover the bound.
-        if returned_upper < required_upper {
-            return Err(refused(
-                "All retention discarded the global objective enclosure",
-            ));
-        }
-    }
-    Ok(answers)
+    // Each retained point encloses its root objective above. The shared
+    // accumulator verifies the returned set covers every retained point bound.
+    super::projected_pair_all::accumulate(&query, retained, tolerance, handles)
 }
 
 #[cfg(test)]
