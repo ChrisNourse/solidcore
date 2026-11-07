@@ -2219,6 +2219,8 @@ fn project_and_trim_body(
 
 // A failed certificate is not an on-curve vote. Keep the existing ambiguity
 // policy, but never use an uncertified projection to choose faces for deletion.
+/// Propagate certified accuracy refusal while preserving the existing
+/// ignore-status policy for other side-vote failures.
 fn projected_side_vote(result: Result<i32>) -> Result<Option<i32>> {
     match result {
         Err(error) if error.kind() == crate::error::ErrorKind::NotWithinTolerance => Err(error),

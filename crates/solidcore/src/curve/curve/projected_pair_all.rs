@@ -140,6 +140,8 @@ impl<'a, O: SolutionObject + 'a> GlobalSolve<'a, O> for AllSolutions<'a, O> {
     }
 }
 
+/// Require one positive-length continuous affine span. NURBS inputs must
+/// have degree one, equal weights and no repeated active knot boundary.
 fn affine_piece(definition: &Definition<'_>, domain: Extent1d) -> Result<Piece> {
     let affine = match definition {
         Definition::Line(_) => true,
@@ -179,6 +181,8 @@ fn affine_piece(definition: &Definition<'_>, domain: Extent1d) -> Result<Piece> 
     }
 }
 
+/// Classify a constrained corner by strict inward objective derivative signs.
+/// An increasing inward direction excludes it; unresolved signs refuse.
 fn corner_maximum(query: &Query<'_>, pieces: [Piece; 2], s: f64, t: f64) -> Result<bool> {
     let [a, b] = &query.definitions;
     let [pa, pb] = pieces;

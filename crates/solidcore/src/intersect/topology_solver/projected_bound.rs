@@ -385,6 +385,8 @@ fn refine_uv(
     Ok(uv)
 }
 
+/// Obtain a net for a supported exact surface definition, checking analytic
+/// support and rejecting procedural approximations or unsupported kinds.
 fn face_net<O: crate::geom::solution_array::SolutionObject>(
     k: &Kernel,
     objects: &dyn super::p1::TopologyObjects<O>,
@@ -412,6 +414,9 @@ fn face_net<O: crate::geom::solution_array::SolutionObject>(
     Nurbs::of(&bs)
 }
 
+/// Validate the selected native face, edge or vertex point and its own metric
+/// enclosure. Return that point's upper bound for the comparison face without
+/// borrowing the comparison face's evaluation uncertainty.
 fn checked_candidate<O: crate::geom::solution_array::SolutionObject>(
     k: &Kernel,
     objects: &dyn super::p1::TopologyObjects<O>,
@@ -687,6 +692,8 @@ pub(super) fn exact_rectangle_boundary(
     Ok(boundary_is_rectangle(&boundary, domain).then_some(boundary.curves))
 }
 
+/// Require one connected four-edge loop that traverses each exact rectangular
+/// domain side once and closes at its first corner.
 fn boundary_is_rectangle(
     boundary: &crate::topology::face::p1::OrientedTrimBoundary,
     domain: &Extent2d,

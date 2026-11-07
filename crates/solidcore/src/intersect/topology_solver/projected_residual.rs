@@ -23,9 +23,12 @@ const MAX_DEGREE: usize = 8;
 const MAX_CELLS: usize = 4096;
 const MAX_DEPTH: usize = 64;
 
-// MSRV 1.85; standard next_up/down require 1.86. The sign branches prevent
-// integer wrap: positive finite bits are below +infinity, negative nonzero bits
-// are above the sign bit. NaNs and infinity never enter finite arithmetic.
+/// Return the next greater representable value, mapping either zero to the
+/// least positive subnormal and preserving NaN and positive infinity.
+///
+/// MSRV 1.85; standard `next_up`/`next_down` require 1.86. The sign branches prevent
+/// integer wrap: positive finite bits are below +infinity, negative nonzero bits
+/// are above the sign bit. NaNs and infinity never enter finite arithmetic.
 fn next_up(x: f64) -> f64 {
     if x.is_nan() || x == f64::INFINITY {
         x
@@ -42,6 +45,8 @@ fn finite(x: Ivl) -> bool {
     x.lo.is_finite() && x.hi.is_finite() && x.lo <= x.hi
 }
 
+/// Expand finite ordered rounded endpoints by one representable neighbor;
+/// invalid endpoints yield the whole interval instead of a false bound.
 fn outward(lo: f64, hi: f64) -> Ivl {
     if lo.is_finite() && hi.is_finite() && lo <= hi {
         Ivl::new(-next_up(-lo), next_up(hi))
@@ -50,6 +55,8 @@ fn outward(lo: f64, hi: f64) -> Ivl {
     }
 }
 
+/// Enclose interval addition with outward rounding, preserving exact-zero
+/// identities only after validating both operands.
 fn add(a: Ivl, b: Ivl) -> Ivl {
     if !finite(a) || !finite(b) {
         Ivl::whole()
@@ -62,6 +69,8 @@ fn add(a: Ivl, b: Ivl) -> Ivl {
     }
 }
 
+/// Enclose interval subtraction, retaining exact cancellation only for equal
+/// singletons and the identity for an exact-zero subtrahend.
 fn sub(a: Ivl, b: Ivl) -> Ivl {
     if !finite(a) || !finite(b) {
         Ivl::whole()
@@ -74,6 +83,8 @@ fn sub(a: Ivl, b: Ivl) -> Ivl {
     }
 }
 
+/// Enclose all four endpoint products with outward rounding; exact zero/one
+/// identities are used only for finite ordered operands.
 fn mul(a: Ivl, b: Ivl) -> Ivl {
     if !finite(a) || !finite(b) {
         return Ivl::whole();
@@ -94,6 +105,8 @@ fn mul(a: Ivl, b: Ivl) -> Ivl {
     )
 }
 
+/// Enclose division only with a finite strictly positive denominator interval.
+/// Invalid operands return the whole interval; exact identities avoid widening.
 fn div_positive(a: Ivl, b: Ivl) -> Ivl {
     if !finite(a) || !finite(b) || b.lo <= 0.0 {
         return Ivl::whole();
@@ -121,8 +134,8 @@ fn cross(a: [Ivl; 3], b: [Ivl; 3]) -> [Ivl; 3] {
     ]
 }
 
-// Convex interpolation: the caller proves the exact fraction is in [0,1].
-// Equal interval operands can remain unchanged even if their exact values differ.
+/// Convex interpolation: the caller proves the exact fraction is in `[0,1]`.
+/// Equal interval operands can remain unchanged even if their exact values differ.
 fn lerp(a: Ivl, b: Ivl, fraction: Ivl) -> Ivl {
     if fraction == Ivl::from(0.0) || a == b {
         a
@@ -189,6 +202,8 @@ fn blossom(
     work.get(degree).copied()
 }
 
+/// Extract homogeneous tensor Bernstein control enclosures on one knot-cell
+/// subrectangle by successive blossoms in both coordinates.
 fn patch(net: &Nurbs, u: [f64; 2], v: [f64; 2], ku: usize, kv: usize) -> Option<Vec<[Ivl; 4]>> {
     let mut along_u = Vec::new();
     for j in 0..=net.q {
@@ -224,6 +239,8 @@ fn patch(net: &Nurbs, u: [f64; 2], v: [f64; 2], ku: usize, kv: usize) -> Option<
 }
 
 // All n <= 16. Pascal additions are exact integers below 2^14, hence exact f64.
+/// Compute a binomial coefficient up to twice the supported degree, where
+/// the Pascal additions remain exactly representable as binary64 integers.
 fn choose(n: usize, k: usize) -> Option<f64> {
     if n > 2 * MAX_DEGREE || k > n {
         return None;
@@ -272,6 +289,8 @@ fn product(a: &[Ivl], b: &[Ivl], p: usize, q: usize) -> Option<Vec<Ivl>> {
     Some(result)
 }
 
+/// Construct Bernstein enclosures of `upper^2 W^2 - |N cross (H-QW) cross N|^2`,
+/// requiring finite positive weight enclosures for every control.
 fn residual(
     controls: &[[Ivl; 4]],
     p: usize,
@@ -322,6 +341,8 @@ struct Cell {
     depth: usize,
 }
 
+/// Subdivide tensor Bernstein enclosures at the midpoint in the selected
+/// coordinate using de Casteljau interpolation.
 fn split(coefficients: &[Ivl], p: usize, q: usize, along_u: bool) -> Option<(Vec<Ivl>, Vec<Ivl>)> {
     let size = p.checked_add(1)?.checked_mul(q.checked_add(1)?)?;
     let mut left = vec![Ivl::from(0.0); size];

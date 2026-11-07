@@ -53,6 +53,8 @@ fn vector([x, y, z]: [Ivl; 3]) -> V3<Ivl> {
 }
 
 impl<'a> Definition<'a> {
+    /// Select an enclosable native curve definition. An ellipse cached form is
+    /// accepted only after its analytic-support identity check.
     pub(super) fn of(curve: &'a Curve, domain: Extent1d) -> Result<Self> {
         match curve.kind() {
             CurveKind::Line(_) => affine_definition(curve, domain)
@@ -77,6 +79,8 @@ impl<'a> Definition<'a> {
         }
     }
 
+    /// Validate finite positive homogeneous controls, bounded degree/count and
+    /// clamped native ends before copying the defining net without renormalization.
     fn nurbs(bs: &crate::nurbs::b_spline_curve::BSplineCurve) -> Result<Self> {
         let raw = bs
             .gw_nurb()
@@ -124,6 +128,8 @@ impl<'a> Definition<'a> {
         }))
     }
 
+    /// Intersect active knot spans with the domain, retaining touching endpoints
+    /// and refusing an empty partition or an exceeded piece budget.
     pub(super) fn pieces(&self, domain: Extent1d) -> Result<Vec<Piece>> {
         let range = Ivl::new(domain.min(), domain.max());
         let Self::Nurbs(net) = self else {
@@ -155,6 +161,8 @@ impl<'a> Definition<'a> {
         Ok(pieces)
     }
 
+    /// Enclose the defining point and first derivative over `range`, using the
+    /// specified knot side when one is supplied.
     pub(super) fn jet(&self, range: Ivl, knot: Option<usize>) -> Result<(V3<Ivl>, V3<Ivl>)> {
         match self {
             Self::Nurbs(net) => {
@@ -226,6 +234,8 @@ fn cross(a: V3<Ivl>, b: V3<Ivl>) -> V3<Ivl> {
     }
 }
 
+/// Apply the unnormalized double-cross projection; scaling the normal by
+/// `a` scales the resulting vector by `a*a`.
 pub(super) fn project(v: V3<Ivl>, normal: V3<Ivl>) -> V3<Ivl> {
     cross(cross(normal, v), normal)
 }
@@ -265,6 +275,8 @@ pub(super) struct Candidate {
 }
 
 impl Query<'_> {
+    /// Evaluate a feasible native parameter pair and require its reported metric
+    /// to lie in that same point pair's definition enclosure.
     pub(super) fn candidate(&self, s: f64, t: f64) -> Result<Candidate> {
         let [a, b] = &self.definitions;
         // Point evaluation uses the definition's own knot-side convention,
@@ -318,6 +330,8 @@ impl Query<'_> {
         Ok(cell)
     }
 
+    /// Intersect direct and centered squared-distance bounds after reducing
+    /// coordinates whose derivative signs place the cell maximum on a boundary.
     pub(super) fn bound(&self, cell: Cell) -> Result<Ivl> {
         let cell = self.maximum_cell(cell)?;
         let [a, b] = &self.definitions;
@@ -340,6 +354,8 @@ impl Query<'_> {
     }
 }
 
+/// Intersect requested and natural intervals, refusing nonfinite requested
+/// endpoints or a nonfinite/empty intersection.
 pub(super) fn bounded_domain(curve: &Curve, interval: Extent1d) -> Result<Extent1d> {
     let natural = curve.natural_interval();
     let lo = natural.min().max(interval.min());

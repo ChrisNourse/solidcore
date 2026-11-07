@@ -801,6 +801,8 @@ fn new_topology_solver<'t, 'a, O: SolutionObject + 't>(
     )
 }
 
+/// Allow tolerance-based early completion only for a `Single` non-maximum
+/// query; a nearby answer cannot finish a maximum search.
 fn early_point_answer<O: SolutionObject>(
     ts: &TopologySolver<'_, '_, O>,
     options: TopologySolveOptions<'_>,
@@ -836,6 +838,8 @@ fn rewrite_endpoint_solutions<O: SolutionObject>(
 }
 
 impl<'t, O: SolutionObject + 't> TopologySolver<'t, '_, O> {
+    /// Collect visited faces for a fixed-point `Single` projected maximum so each
+    /// can later be checked against the final incumbent.
     fn defer_projected_point_bounds(&mut self) {
         if self.base.operation == SolverOperation::ProjectedMaximize
             && self.base.solution_requested == SolutionRequested::Single
@@ -844,6 +848,8 @@ impl<'t, O: SolutionObject + 't> TopologySolver<'t, '_, O> {
         }
     }
 
+    /// Certify every recorded face against the final returned candidate for this
+    /// fixed query point.
     fn certify_projected_point_bounds(&self, point: Point3) -> Result<()> {
         if let Some(faces) = &self.deferred_projected_faces {
             for &face in faces {
