@@ -371,3 +371,32 @@ identified artifact, reproducing the recorded native points and scalars exactly.
 This supplies fresh corroboration; it does not retroactively establish the old
 shared-cache library's revision. The exact-head runner and native certificate
 tests remain the acceptance evidence for the production change.
+
+## Vertex ownership in two-tree certification
+
+A two-tree `ProjectedMaximize`/`Single` traversal changes its query vertex at
+successive leaves. The shared incumbent may still belong to an earlier vertex.
+Remeasuring that incumbent against the later vertex can falsely refuse with
+`projected candidate value is outside its own point enclosure`, even though the
+original candidate is valid for its own vertex.
+
+Each vertex-face comparison now uses a local accumulator, constructs native
+candidates for that vertex, refines them and proves the whole face against that
+same point. Only the fully certified answer is merged into the global solver.
+The global caller cutoff and retention policy still decide whether it survives.
+Fixed-point deferred face certification keeps its existing path; no two-tree
+certificate is bypassed.
+
+The public `solve_two_tree_sets` regression uses a unit XY rectangle and vertices
+at `(-3,0,0)` and `(-1,0,0)`, projected with normal Z. The farther vertex's exact
+maximum is `sqrt(17)`, attained at `(1,1,0)`. Conservative enclosing tree boxes
+ensure both comparisons are visited; both insertion orders and both operand
+orders retain the farther vertex identity and value. A squared external cutoff
+of 25 gives successful empty output in each order, proving that local
+certification does not bypass global filtering. Before the fix, the order that
+visits the farther vertex first refuses when visiting the nearer vertex.
+
+At isolated repair `13eddc9a1`, all 49 topology tests pass; the final regression
+covers all eight insertion/operand/cutoff combinations, and strict
+`cargo clippy -p solidcore --lib --tests -- -D warnings` passes. These focused
+checks do not substitute for the final integrated golden and hosted CI gates.

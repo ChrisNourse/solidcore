@@ -1155,3 +1155,148 @@ fn zero_slack_projected_face_maximum_accepts_plane_corner() {
     check_zero_slack_plane_candidate(Vec3::Z);
     check_zero_slack_plane_candidate(Vec3::Z * 2.0);
 }
+
+/// Each vertex-face leaf must be certified against its own point before global merging.
+#[test]
+fn projected_two_tree_vertex_face_keeps_each_query_point_separate() {
+    for reverse in [false, true] {
+        for swap in [false, true] {
+            check_vertex_face_incumbent(reverse, swap, 0.0);
+            check_vertex_face_incumbent(reverse, swap, 25.0);
+        }
+    }
+}
+
+/// Use conservative boxes to visit both vertices even after the farther one wins.
+fn check_vertex_face_incumbent(reverse: bool, swap: bool, cutoff_squared: f64) {
+    use crate::{
+        geom::{
+            extent2d::Extent2d,
+            extent3d::Extent3d,
+            global_solver::{SolutionRequested, SolverOperation},
+            tol::USE_DEFAULT,
+            tree::{NodeGeomType, Tree},
+            vector2d::Vec2,
+        },
+        intersect::topology_solver::{
+            p1::{TopologyObjects, TopologySolver},
+            p2::TopologyTrees,
+        },
+        math::Vec3,
+        surface::{plane::Plane, surface::Surface},
+        topology::{
+            brep::{
+                p2::ArenaNotifyState,
+                p3::new_brep,
+                p8::{create_face_from_surface, FaceBuildEnv},
+            },
+            brep_cache::{arena_identity, BrepObjects, CacheObject},
+            topology_traverser::Marks,
+            BrepId,
+        },
+        Kernel,
+    };
+
+    let mut k = Kernel::default();
+    let domain = Extent2d::from_bounds(0., 0., 1., 1.);
+    let surface = Surface::from(Plane::new(
+        Vec3::ZERO,
+        Vec3::X,
+        Vec3::Y,
+        Vec2::new(1., 1.),
+        &domain,
+    ));
+    let mut b = new_brep(&mut k, USE_DEFAULT, USE_DEFAULT).unwrap();
+    let mut state = ArenaNotifyState::new(&b);
+    let mut env = state.env(None);
+    let mut marks = Marks::default();
+    let keys = |f| arena_identity(CacheObject::Face(f));
+    let mut fenv = FaceBuildEnv {
+        env: &mut env,
+        marks: &mut marks,
+        this_face: &keys,
+    };
+    let face = create_face_from_surface(&mut k, &mut b, Some(surface), &domain, &mut fenv).unwrap();
+    let far = b.add_vertex(Vec3::new(-3., 0., 0.)).unwrap();
+    let near = b.add_vertex(Vec3::new(-1., 0., 0.)).unwrap();
+    let mut prep = crate::query::brep::RayPreparation::default();
+    {
+        let objects = BrepObjects {
+            preparation: Some(&prep),
+            brep: &b,
+            brep_id: BrepId::from_index(0),
+            cache: None,
+            keys: &arena_identity,
+            owner_of: &|_| None,
+        };
+        let mut context = objects.surface_solve_context().unwrap();
+        assert!(matches!(
+            context.build_surface_cache(
+                &k,
+                b.face(face).unwrap().surface.as_ref().unwrap(),
+                Some(CacheObject::Surface(face))
+            ),
+            Err(crate::SolidError::PreparationRequired { .. })
+        ));
+    }
+    let req = prep.take_request().unwrap();
+    prep.prepare(&k, &mut b, req).unwrap();
+    let objects = BrepObjects {
+        preparation: Some(&prep),
+        brep: &b,
+        brep_id: BrepId::from_index(0),
+        cache: None,
+        keys: &arena_identity,
+        owner_of: &|_| None,
+    };
+    let extent = Extent3d::from_points(Vec3::new(-20., -20., -20.), Vec3::new(20., 20., 20.));
+    let mut vertices = Tree::new_spatial(&extent);
+    for v in if reverse { [near, far] } else { [far, near] } {
+        vertices
+            .add_to_spatial_tree(&extent, Some(CacheObject::Vertex(v)), NodeGeomType::Default)
+            .unwrap();
+    }
+    let mut surfaces = Tree::new_spatial(&extent);
+    surfaces
+        .add_to_spatial_tree(
+            &extent,
+            Some(CacheObject::Surface(face)),
+            NodeGeomType::Default,
+        )
+        .unwrap();
+    let empty = Tree::from_point(Vec3::ZERO, 0.0, false);
+    let first = TopologyTrees {
+        vertices: &vertices,
+        curves: &empty,
+        surfaces: &empty,
+    };
+    let second = TopologyTrees {
+        vertices: &empty,
+        curves: &empty,
+        surfaces: &surfaces,
+    };
+    let mut solver = TopologySolver::new(
+        &k,
+        &objects,
+        SolverOperation::ProjectedMaximize,
+        SolutionRequested::Single,
+        0.,
+        cutoff_squared,
+        &[Vec3::Z],
+    );
+    let result = if swap {
+        solver.solve_two_tree_sets(second, first)
+    } else {
+        solver.solve_two_tree_sets(first, second)
+    };
+    result.unwrap();
+    if cutoff_squared == 25.0 {
+        // The current vertex is certified locally, but its answer must still
+        // respect the caller's stronger incumbent when merged globally.
+        assert!(solver.base.solutions.is_empty());
+        return;
+    }
+    let s = &solver.base.solutions.as_slice()[0];
+    assert_eq!(s.start.solution_value, 17f64.sqrt());
+    assert!(s.objects.contains(&Some(CacheObject::Vertex(far))));
+}

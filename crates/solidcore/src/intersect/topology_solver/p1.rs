@@ -1658,11 +1658,30 @@ impl<'a, O: SolutionObject> LocalSolver<'a, O> {
             let certified_maximum = op == SolverOperation::ProjectedMaximize
                 && ts.base.solution_requested == SolutionRequested::Single;
             let before = certified_maximum.then(|| ts.base.clone());
+            // A two-tree traversal changes the query vertex between leaves.
+            // Its shared incumbent must not be remeasured against this vertex.
+            let mut vertex_solver = (certified_maximum && self.point_vertex.is_some()).then(|| {
+                TopologySolver::new(
+                    ts.kernel,
+                    objects,
+                    op,
+                    SolutionRequested::Single,
+                    tol,
+                    0.0,
+                    &ts.base.opt_vectors,
+                )
+            });
             let result: Result<()> = (|| {
-                let opt_vectors = ts.base.opt_vectors.clone();
+                let current = vertex_solver.as_mut().unwrap_or(&mut *ts);
+                let opt_vectors = current.base.opt_vectors.clone();
                 if certified_maximum {
-                    let hints =
-                        projected_face_candidate_uv(ts.kernel, objects, face, &opt_vectors, tol)?;
+                    let hints = projected_face_candidate_uv(
+                        current.kernel,
+                        objects,
+                        face,
+                        &opt_vectors,
+                        tol,
+                    )?;
                     for (uv, value) in super::projected_bound::native_candidates(
                         k,
                         objects,
@@ -1677,11 +1696,11 @@ impl<'a, O: SolutionObject> LocalSolver<'a, O> {
                         *sol.start.param_mut(0)? = uv.x;
                         *sol.start.param_mut(1)? = uv.y;
                         sol.start.solution_value = value;
-                        ts.add_sorted_solution(&sol, SortKey::BySolutionValue, true)?;
+                        current.add_sorted_solution(&sol, SortKey::BySolutionValue, true)?;
                     }
                 } else {
                     let (trim_3d_curves, trim_uv_curves) =
-                        face_silhouettes(ts.kernel, objects, face, &opt_vectors, tol)?;
+                        face_silhouettes(current.kernel, objects, face, &opt_vectors, tol)?;
                     for (curve, uv_curve) in trim_3d_curves.iter().zip(&trim_uv_curves) {
                         let mut sub: LocalSolver<'_, O> = LocalSolver::new(
                             LocalSolverKind::PointCurve,
@@ -1693,7 +1712,7 @@ impl<'a, O: SolutionObject> LocalSolver<'a, O> {
                         sub.surface_curve = Some(uv_curve);
                         sub.point = self.point;
                         sub.point_vertex = self.point_vertex;
-                        sub.point_curve(k, ts, curve, None)?;
+                        sub.point_curve(k, current, curve, None)?;
                     }
                 }
                 if certified_maximum {
@@ -1702,17 +1721,34 @@ impl<'a, O: SolutionObject> LocalSolver<'a, O> {
                         objects,
                         face,
                         self.point,
-                        &mut ts.base,
+                        &mut current.base,
                     )?;
-                    if let Some(faces) = &mut ts.deferred_projected_faces {
+                    if let Some(faces) = &mut current.deferred_projected_faces {
                         super::projected_bound::certify_candidate(
-                            k, objects, face, self.point, &ts.base,
+                            k,
+                            objects,
+                            face,
+                            self.point,
+                            &current.base,
                         )?;
                         if !faces.contains(&face) {
                             faces.push(face);
                         }
                     } else {
-                        super::projected_bound::certify(k, objects, face, self.point, &ts.base)?;
+                        super::projected_bound::certify(
+                            k,
+                            objects,
+                            face,
+                            self.point,
+                            &current.base,
+                        )?;
+                    }
+                }
+                // The local vertex-face maximum has its own whole-face proof.
+                // Merge only afterward, preserving the global retention policy.
+                if let Some(vertex_solver) = &vertex_solver {
+                    for solution in vertex_solver.base.solutions.as_slice() {
+                        ts.add_sorted_solution(solution, SortKey::BySolutionValue, true)?;
                     }
                 }
                 Ok(())
