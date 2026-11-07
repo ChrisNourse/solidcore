@@ -1193,6 +1193,8 @@ fn dyadic_four_product_order(terms: &[([f64; 4], bool)]) -> Option<std::cmp::Ord
 fn dyadic_product_order<const FACTORS: usize, const WORDS: usize>(
     terms: &[([f64; FACTORS], bool)],
 ) -> Option<std::cmp::Ordering> {
+    /// Decompose a finite binary64 into sign, integer significand and power of two,
+    /// including subnormal values.
     fn parts(value: f64) -> Option<(bool, u64, i32)> {
         if !value.is_finite() {
             return None;
@@ -1214,6 +1216,8 @@ fn dyadic_product_order<const FACTORS: usize, const WORDS: usize>(
             },
         ))
     }
+    /// Add a shifted limb with carry propagation; return `None` if the fixed
+    /// accumulator has no slot for a remaining carry.
     fn add_word(words: &mut [u64], word: u64, shift: usize) -> Option<()> {
         let mut index = shift / 64;
         let mut carry = u128::from(word) << (shift % 64);
@@ -2734,6 +2738,10 @@ fn complete_affine_definition(curve: &Curve, interval: Extent1d) -> Option<Vec<E
 }
 
 impl<O: SolutionObject> ProjectedAffineSelection<O> {
+    /// Require completed affine coverage and a returned point whose own enclosure
+    /// covers the global extremum bound. Prove empty cutoff exclusion and, for
+    /// `All`, representation of every candidate not excluded by the retention band;
+    /// otherwise refuse. `Single` may replace a rounded winner with a certified one.
     fn finish(
         &self,
         curve: &Curve,
@@ -2921,6 +2929,8 @@ fn affine_range_represents<O: SolutionObject>(
 }
 
 impl<'t, O: SolutionObject + 't> CpGlobalSolver<'t, O> {
+    /// Record this native candidate and its own point enclosure, tightening the
+    /// selection lower bound with the independently enclosed current span.
     fn record_affine_candidate(&mut self, solution: &Solution<O>, bound: Ivl) {
         if let Some(selection) = &mut self.projected_affine_selection {
             selection.candidates.push((*solution, bound));

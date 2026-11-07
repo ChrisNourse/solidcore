@@ -85,6 +85,7 @@ pub(super) fn supports(curves: [&Curve; 2], intervals: [Extent1d; 2]) -> bool {
         == 1
 }
 
+/// Require one positive-length native knot piece for the interval.
 fn one_piece(definition: &Definition<'_>, interval: Extent1d) -> Result<Piece> {
     let pieces = definition.pieces(interval)?;
     match pieces.as_slice() {
@@ -95,6 +96,9 @@ fn one_piece(definition: &Definition<'_>, interval: Extent1d) -> Result<Piece> {
     }
 }
 
+/// Prove identical native NURBS definitions and fixed nonzero derivative signs
+/// for every nonvanishing projected coordinate over the interval union.
+/// Unresolved signs refuse when the subdivision depth or visit budget is spent.
 fn certify(query: &Query<'_>, domains: [Extent1d; 2]) -> Result<[Piece; 2]> {
     let [a, b] = &query.definitions;
     let (Definition::Nurbs(na), Definition::Nurbs(nb)) = (a, b) else {
@@ -169,6 +173,8 @@ fn certify(query: &Query<'_>, domains: [Extent1d; 2]) -> Result<[Piece; 2]> {
     Ok([one_piece(a, da)?, one_piece(b, db)?])
 }
 
+/// Select opposite interval endpoints whose ordered parameters move apart
+/// under the previously certified projected-coordinate signs.
 fn corner_maximum([a, b]: [Piece; 2], s: f64, t: f64) -> bool {
     // With the certified fixed coordinate signs, distance strictly grows as
     // ordered parameters move apart. Equal parameters have zero distance and
