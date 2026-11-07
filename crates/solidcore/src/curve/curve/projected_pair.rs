@@ -79,8 +79,8 @@ impl<'a> Definition<'a> {
         }
     }
 
-    /// Validate finite positive homogeneous controls, bounded degree/count and
-    /// clamped native ends before copying the defining net without renormalization.
+    /// Validate finite homogeneous controls with positive weights, bounded
+    /// degree/count and clamped native ends before copying without renormalization.
     fn nurbs(bs: &crate::nurbs::b_spline_curve::BSplineCurve) -> Result<Self> {
         let raw = bs
             .gw_nurb()
@@ -275,8 +275,9 @@ pub(super) struct Candidate {
 }
 
 impl Query<'_> {
-    /// Evaluate a feasible native parameter pair and require its reported metric
-    /// to lie in that same point pair's definition enclosure.
+    /// Evaluate a caller-supplied native parameter pair and require its reported
+    /// metric to lie in that same point pair's definition enclosure. The caller
+    /// establishes feasibility in the requested parameter domains.
     pub(super) fn candidate(&self, s: f64, t: f64) -> Result<Candidate> {
         let [a, b] = &self.definitions;
         // Point evaluation uses the definition's own knot-side convention,
