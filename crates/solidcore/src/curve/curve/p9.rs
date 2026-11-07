@@ -24,7 +24,7 @@
 //!   to 32,768 boxes and depth 128 in `projected_pair`. Proof failures propagate.
 //!   Structural affine and identical monotone NURBS All classes share the definition enclosures and
 //!   preserve the existing retention and ordered duplicate rules.
-//! - **Identical open ellipse All maxima (#3060).** Bounded interval edge-root
+//! - **Identical open ellipse All maxima.** Bounded interval edge-root
 //!   construction and the antipodal-axis theorem cover the finite candidate set;
 //!   at most 4,096 cells, depth 48 and 64 Newton contractions per root. Selected
 //!   ambiguities refuse; full turns and distinct ellipse pairs keep the old path.

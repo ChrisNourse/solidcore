@@ -167,3 +167,24 @@ same public integration checkpoint. The 75-case scope audit and filtered golden
 graduation pass as detailed above. Final parent propagation and broader gates
 remain pending. No sampled rendering or independent optimization is
 used as a completeness certificate. Remaining general All cases stay under #3060.
+
+## Integrated readiness validation
+
+The integrated kernel `686d14268` passes all 38 focused projected-pair tests,
+full workspace formatting, the `wasm32-unknown-unknown` kernel check and strict
+workspace Clippy with all targets (`-D warnings`). The actual complete affected
+unit also passes:
+
+```text
+PASS curve.curve_p9 cases=3126 changed=0 added=0 removed=0 broken=0 known_failing=44
+goldens: 1 unit(s), 1 passed, 0 failed
+```
+
+The ellipse implementation and dispatch are unchanged from the preceding
+published checkpoint; the historical 75-case scope audit and gen0472 graduation
+above remain applicable. No additional expected output or exclusion is changed
+by this validation. The subsequent parent merge `d833e2baa` brings only the seven
+independently audited point/face golden records and their evidence, with no
+kernel changes. Removing an issue number from a library deviation note is also
+comment-only. Hosted CI and maintainer review remain separate merge gates; the
+44 remaining general All failures are not claimed repaired.
